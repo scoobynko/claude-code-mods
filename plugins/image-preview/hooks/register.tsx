@@ -36,6 +36,7 @@ type Roots = { cwd: string; home: string; started: number }
 const MTIME_SLACK_MS = 2000
 const awaited = new Set<string>()
 const settled = new Set<string>()
+const noted = new Set<string>()
 let queue: Promise<unknown> = Promise.resolve()
 
 function inOrder<T>(task: () => Promise<T>): Promise<T> {
@@ -75,20 +76,16 @@ const spellings = (path: string, bases: readonly string[], roots: Roots) =>
     : [roots.cwd, ...bases.map(base => under(roots.cwd, base, roots))].map(base => under(base, path, roots))
 
 async function rootsOf($: EngineInterface): Promise<Roots> {
-  const usage = await $.session.usage().catch(() => undefined)
-  return {
-    cwd: await $.session.cwd(),
-    home: (await $.env.get('HOME')) ?? '~',
-    started: (usage?.startedAt ?? 0) - MTIME_SLACK_MS,
-  }
+  const [usage, cwd, home] = await Promise.all([$.session.usage().catch(() => undefined), $.session.cwd(), $.env.get('HOME')])
+  return { cwd, home: home ?? '~', started: (usage?.startedAt ?? 0) - MTIME_SLACK_MS }
 }
 
 async function placed($: EngineInterface, path: string, bases: readonly string[], roots: Roots) {
-  for (const spelling of spellings(path, bases, roots)) {
-    const stat = await $.fs.stat(spelling, { resolve: true }).catch(() => undefined)
-    if (stat?.kind === 'file' && stat.mtimeMs >= roots.started) return { path: stat.realPath ?? spelling, mtime: stat.mtimeMs }
-  }
-  return undefined
+  const tried = spellings(path, bases, roots)
+  const stats = await Promise.all(tried.map(spelling => $.fs.stat(spelling, { resolve: true }).catch(() => undefined)))
+  const at = stats.findIndex(stat => stat?.kind === 'file' && stat.mtimeMs >= roots.started)
+  const stat = stats[at]
+  return stat ? { path: stat.realPath ?? tried[at] ?? path, mtime: stat.mtimeMs } : undefined
 }
 
 async function conversation($: EngineInterface, agentId: string | undefined): Promise<readonly Message[]> {
@@ -97,46 +94,45 @@ async function conversation($: EngineInterface, agentId: string | undefined): Pr
   return Array.isArray(answer) ? answer : []
 }
 
-async function scan($: EngineInterface, agentId?: string): Promise<Dated[]> {
-  const stamps = await read($, seen)
-  const roots = await rootsOf($)
+async function scan($: EngineInterface, agentId?: string, known?: Roots): Promise<Dated[]> {
+  const [stamps, roots, messages] = await Promise.all([read($, seen), known ?? rootsOf($), conversation($, agentId)])
   const tag = agentId === undefined ? {} : { agentId }
-  const dated: Dated[] = []
+  const found = collect(messages)
+  const places = await Promise.all(found.map(one => (one.kind === 'path' ? placed($, one.path, one.bases, roots) : undefined)))
+  const dated = new Map<string, Dated>()
 
-  for (const one of collect(await conversation($, agentId))) {
+  found.forEach((one, i) => {
     if (one.kind === 'block') {
       const at = stamps[one.id]
-      dated.push(at === undefined ? { ...one, ...tag } : { ...one, ...tag, at })
-      continue
+      dated.set(one.id, at === undefined ? { ...one, ...tag } : { ...one, ...tag, at })
+      return
     }
-    const file = await placed($, one.path, one.bases, roots)
-    if (!file) continue
+    const file = places[i]
+    if (!file) return
     const id = pathId(file.path)
-    const known = dated.findIndex(other => other.id === id)
-    if (known >= 0 && one.from === 'text') continue
-    if (known >= 0) dated.splice(known, 1)
-    dated.push({ ...one, ...tag, id, path: file.path, at: file.mtime, mtime: file.mtime })
-  }
+    if (dated.has(id) && one.from === 'text') return
+    dated.delete(id)
+    dated.set(id, { ...one, ...tag, id, path: file.path, at: file.mtime, mtime: file.mtime })
+  })
 
-  return dated
+  return [...dated.values()]
 }
 
 async function scanAll($: EngineInterface) {
-  const found = await scan($)
-  const listed = await $.agent.list().catch(() => [])
+  const [roots, listed, remembered] = await Promise.all([rootsOf($), $.agent.list().catch(() => []), read($, agents)])
   const running = new Set(listed.filter(agent => agent.status === 'running').map(agent => agent.id))
-  for (const id of new Set([...(await read($, agents)), ...listed.map(agent => agent.id)])) {
-    if (!running.has(id) && settled.has(id)) continue
-    found.push(...(await scan($, id)))
+  const ids = [...new Set([...remembered, ...listed.map(agent => agent.id)])].filter(id => running.has(id) || !settled.has(id))
+  const [main, ...others] = await Promise.all([scan($, undefined, roots), ...ids.map(id => scan($, id, roots))])
+  for (const id of ids) {
     if (running.has(id)) settled.delete(id)
     else settled.add(id)
   }
-  return found
+  return [...(main ?? []), ...others.flat()]
 }
 
 async function tempDir($: EngineInterface, sessionId?: string) {
-  const base = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
-  return `${base}/claude-image-preview-${sessionId ?? (await $.session.id())}`
+  const [base, id] = await Promise.all([$.env.get('TMPDIR'), sessionId ?? $.session.id()])
+  return `${(base ?? '/tmp').replace(/\/+$/, '')}/claude-image-preview-${id}`
 }
 
 async function materialize($: EngineInterface, one: Dated): Promise<ImageFile> {
@@ -164,19 +160,18 @@ async function prepare($: EngineInterface, id: string, one: Dated | undefined) {
 }
 
 async function show($: EngineInterface, id: string, found?: Dated[]) {
-  await update($, selected, () => id)
-  const item = (await read($, items)).find(other => other.id === id)
-  if (isReady((await read($, files))[id], item?.mtime)) return
+  const [list, ready] = await Promise.all([read($, items), read($, files), update($, selected, () => id)])
+  const item = list.find(other => other.id === id)
+  if (isReady(ready[id], item?.mtime)) return
   const known = found?.find(candidate => candidate.id === id)
   await prepare($, id, known ?? (await scan($, item?.agentId)).find(candidate => candidate.id === id))
 }
 
 async function relist($: EngineInterface) {
-  const found = await scanAll($)
-  const before = await read($, items)
+  const [found, before] = await Promise.all([scanAll($), read($, items)])
   const fresh = new Map(found.map(one => [one.id, itemOf(one)]))
   const merged = [...before.filter(item => !fresh.has(item.id)), ...fresh.values()].sort(byTime)
-  await update($, items, () => merged)
+  if (JSON.stringify(merged) !== JSON.stringify(before)) await update($, items, () => merged)
 
   return { found, before, merged }
 }
@@ -193,15 +188,17 @@ async function refresh($: EngineInterface, isOpening = false) {
 }
 
 async function keep($: EngineInterface, found: Dated[]) {
+  const ready = await read($, files)
   for (const one of found) {
-    if (one.kind === 'block' && !isReady((await read($, files))[one.id], undefined)) await prepare($, one.id, one)
+    if (one.kind === 'block' && !isReady(ready[one.id], undefined)) await prepare($, one.id, one)
   }
 }
 
 async function notice($: EngineInterface, blocks: readonly Block[], agentId: string | undefined) {
-  if (agentId !== undefined) {
+  if (agentId !== undefined && !noted.has(agentId)) {
+    noted.add(agentId)
     settled.delete(agentId)
-    if (!(await read($, agents)).includes(agentId)) await update($, agents, all => [...all.filter(id => id !== agentId), agentId])
+    await update($, agents, all => [...all.filter(id => id !== agentId), agentId])
   }
   const results = blocks.filter(block => block.type === 'tool_result')
   const inner = results.flatMap(block => (Array.isArray(block.content) ? (block.content as Block[]) : []))
@@ -223,11 +220,14 @@ async function notice($: EngineInterface, blocks: readonly Block[], agentId: str
 async function forget($: EngineInterface) {
   awaited.clear()
   settled.clear()
-  await update($, items, () => [])
-  await update($, selected, () => '')
-  await update($, files, () => ({}))
-  await update($, seen, () => ({}))
-  await update($, agents, () => [])
+  noted.clear()
+  await Promise.all([
+    update($, items, () => []),
+    update($, selected, () => ''),
+    update($, files, () => ({})),
+    update($, seen, () => ({})),
+    update($, agents, () => []),
+  ])
 }
 
 async function refreshIfOpen($: EngineInterface) {
@@ -274,23 +274,23 @@ export const register: Register = on => {
   })
 
   on('session.end', async ($, e, next) => {
-    await $.process.run(['rm', '-rf', await tempDir($, e.sessionId)]).catch(() => undefined)
-    await inOrder(() => forget($))
+    const dir = await tempDir($, e.sessionId)
+    await Promise.all([$.process.run(['rm', '-rf', dir]).catch(() => undefined), inOrder(() => forget($))])
 
     return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
-    const list = [...(await read($, items))].reverse()
+    const [kept, current, ready] = await Promise.all([read($, items), read($, selected), read($, files)])
+    const list = [...kept].reverse()
     if (list.length === 0) return <Text dimColor>No images in this session yet.</Text>
 
-    const current = await read($, selected)
     const at = Math.max(0, list.findIndex(item => item.id === current))
     const first = Math.max(0, Math.min(at - Math.floor(LIST_ROWS / 2), list.length - LIST_ROWS))
     const shown = list[at]
     const label = shown?.label ?? ''
-    const file = (await read($, files))[shown?.id ?? '']
+    const file = ready[shown?.id ?? '']
     const columns = e.props.bodyColumns
     const listRows = Math.min(list.length, LIST_ROWS) + (list.length > LIST_ROWS ? 1 : 0)
     const room = Math.max(MIN_PICTURE_ROWS, e.props.scroll.bodyRows - listRows - FRAGMENT_ROWS - CHROME_ROWS)
