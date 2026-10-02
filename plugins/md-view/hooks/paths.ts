@@ -1,3 +1,5 @@
+import { fenceAfter } from './fences'
+
 const TOKEN = String.raw`[\w.+~\/-][\w@.+~\/-]*\.md`
 const BEFORE = String.raw`(?<![\w@.+~\/:-])`
 const AFTER = String.raw`(?![\w@+~\/-]|\.\w)`
@@ -6,7 +8,6 @@ const CODE = '(`+)([^`\\n]+)\\3'
 const MENTION = new RegExp(`${BEFORE}@?(${TOKEN})${AFTER}`, 'gi')
 const INLINE = new RegExp(`${LINK}|${CODE}|${BEFORE}(@?)(${TOKEN})${AFTER}`, 'gi')
 const WHOLE = new RegExp(`^${TOKEN}$`, 'i')
-const FENCE = /^ {0,3}(`{3,}|~{3,})/
 
 export const hasMention = (text: string): boolean => /\.md(?![\w-])/i.test(text)
 
@@ -76,16 +77,9 @@ export const linkify = (text: string, known: ReadonlySet<string>, cwd: string, h
     })
   let fence = ''
   const lines = text.split('\n').map(line => {
-    const mark = FENCE.exec(line)?.[1]
-    if (fence) {
-      if (mark && mark[0] === fence[0] && mark.length >= fence.length && line.trim() === mark) fence = ''
-      return line
-    }
-    if (mark) {
-      fence = mark
-      return line
-    }
-    return inline(line)
+    const wasOpen = fence
+    fence = fenceAfter(fence, line)
+    return wasOpen || fence ? line : inline(line)
   })
   return { text: lines.join('\n'), hrefs: [...hrefs] }
 }
