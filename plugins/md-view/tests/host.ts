@@ -26,8 +26,10 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
     '/proj/README.md': README,
     '/proj/docs/guide.md': GUIDE,
     '/proj/notes/todo.md': '- [ ] todo',
+    '/proj/package.json': '{}',
   }
   const opened: PaneOpenArgs[] = []
+  const reads: string[] = []
   const step: { answer: string; toolUses: TurnStepToolUse[] } = { answer: '', toolUses: [] }
   mock.env(on, { HOME: home })
   on('session.cwd', () => ({ value: '/proj' }))
@@ -44,6 +46,7 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
     return { value: { kind: 'file', size: text.length, mtimeMs: 0, isLink: false } }
   })
   on('fs.read', (_, e) => {
+    reads.push(e.path)
     const text = disk[e.path]
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
@@ -52,7 +55,7 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
     opened.push(e)
     return { value: { isPlaced: true } }
   })
-  return { disk, opened, step }
+  return { disk, opened, reads, step }
 }
 
 export const start = ($: Engine) => $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })

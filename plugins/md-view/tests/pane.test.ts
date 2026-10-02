@@ -217,3 +217,48 @@ test('cuts a path longer than the pane from its start', async ($, on) => {
     await ui.unmount()
   }
 })
+
+test('lists a file a command has just created', async ($, on) => {
+  const session = host(on, [])
+  on('tool.call', () => ({ result: {} }))
+  await start($)
+  await say($, session, '', [{ name: 'Bash', input: { command: 'pandoc in.docx -o docs/new.md' } }])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+
+  session.disk['/proj/docs/new.md'] = '# New'
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'bash-1', command: 'pandoc in.docx -o docs/new.md' })
+
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['docs/new.md'])
+})
+
+test('/md-view says when it cannot preview the path', async ($, on) => {
+  host(on, [])
+  await start($)
+
+  expect(await run($, 'docs/typo.md')).toMatchObject({ text: 'Cannot preview docs/typo.md: File not found.' })
+  expect(await run($, '"README.md"')).toMatchObject({ text: 'Previewing README.md.' })
+})
+
+test('/md-view previews another kind of file without listing it', async ($, on) => {
+  host(on, [])
+  await start($)
+
+  expect(await run($, 'package.json')).toMatchObject({ text: 'Previewing package.json.' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'files' })
+
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+})
+
+test('does not read an unchanged file again at the end of a turn', async ($, on) => {
+  const { reads } = host(on)
+  on('turn.complete', () => ({ text: '' }))
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'file-0' })
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  expect(reads).toEqual(['/proj/docs/guide.md'])
+})

@@ -2,6 +2,7 @@ export type MdFile = {
   text: string
   totalChars: number
   error: string
+  stamp: string
 }
 
 export type MdView = {

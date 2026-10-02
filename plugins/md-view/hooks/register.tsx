@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, FsStat, Register } from 'claude-code'
 
 import type { MdFile, MdView } from '../types'
 import { CONTROL, MARKDOWN_CHARS, layout, load } from './document'
@@ -12,6 +12,7 @@ const PANE = 'md-view'
 const TITLE = 'Markdown'
 const NO_FILES = 'No Markdown files in this session yet.'
 const MAX_FILES = 200
+const MAX_CANDIDATES = 400
 const MIN_COLUMNS = 20
 const MAX_BYTES = 4 * 1024 * 1024
 const MAX_LINKS = 256
@@ -40,7 +41,11 @@ const mentionsOf = (text: string, uses: readonly ToolUse[]): string[] => [...men
 
 const plural = (count: number): string => (count === 1 ? 'file' : 'files')
 
-const failed = (error: string): MdFile => ({ text: '', totalChars: 0, error })
+const failed = (error: string, stamp = ''): MdFile => ({ text: '', totalChars: 0, error, stamp })
+
+const stampOf = (stat: FsStat | null): string => (stat ? `${stat.kind}:${stat.size}:${stat.mtimeMs}` : '')
+
+const unquoted = (text: string): string => text.trim().replace(/^(["'])(.*)\1$/, '$2').replace(/^@/, '')
 
 const quietly = (work: Promise<unknown>): Promise<void> =>
   work.then(
@@ -53,21 +58,19 @@ async function placeOf($: EngineInterface): Promise<Place> {
   return { cwd, home: home ?? '' }
 }
 
-async function isFile($: EngineInterface, path: string) {
+async function statOf($: EngineInterface, path: string) {
   try {
-    return (await $.fs.stat(path)).kind === 'file'
+    return await $.fs.stat(path)
   } catch {
-    return false
+    return null
   }
 }
 
 async function remember($: EngineInterface, raws: string[], place: Place) {
   const known = await read($, files)
-  const head: string[] = []
-  for (const path of new Set(raws.map(raw => resolvePath(raw, place)).reverse())) {
-    if (head.length === MAX_FILES) break
-    if (known.includes(path) || (await isFile($, path))) head.push(path)
-  }
+  const paths = [...new Set(raws.map(raw => resolvePath(raw, place)).reverse())].slice(0, MAX_CANDIDATES)
+  const stats = await Promise.all(paths.map(path => (known.includes(path) ? null : statOf($, path))))
+  const head = paths.filter((path, index) => known.includes(path) || stats[index]?.kind === 'file').slice(0, MAX_FILES)
   if (head.length === 0 || head.every((path, index) => known[index] === path)) return
   await update($, files, list => [...head, ...list.filter(path => !head.includes(path))].slice(0, MAX_FILES))
 }
@@ -77,11 +80,13 @@ async function note($: EngineInterface, raws: string[]) {
 }
 
 async function readFile($: EngineInterface, path: string): Promise<MdFile> {
+  const stat = await statOf($, path)
+  if (!stat) return failed('File not found.')
+  const stamp = stampOf(stat)
+  if (stat.kind !== 'file') return failed('Not a file.', stamp)
+  if (stat.size > MAX_BYTES) return failed('Too large to preview.', stamp)
   try {
-    const stat = await $.fs.stat(path)
-    if (stat.kind !== 'file') return failed('Not a file.')
-    if (stat.size > MAX_BYTES) return failed('Too large to preview.')
-    return { ...load(await $.fs.read(path)), error: '' }
+    return { ...load(await $.fs.read(path)), error: '', stamp }
   } catch {
     return failed('File not found.')
   }
@@ -90,6 +95,7 @@ async function readFile($: EngineInterface, path: string): Promise<MdFile> {
 async function showFile($: EngineInterface, path: string) {
   const file = await readFile($, path)
   await update($, view, (): MdView => ({ path, file }))
+  return file
 }
 
 async function listFiles($: EngineInterface) {
@@ -120,16 +126,17 @@ async function openHref($: EngineInterface, href: string) {
 async function refresh($: EngineInterface, path?: string) {
   const shown = await read($, view)
   if (!shown.file || (path !== undefined && path !== shown.path)) return
+  if (stampOf(await statOf($, shown.path)) === shown.file.stamp) return
   const file = await readFile($, shown.path)
-  if (file.text === shown.file.text && file.error === shown.file.error) return
   await update($, view, (now): MdView => (now.file && now.path === shown.path ? { path: now.path, file } : now))
 }
 
-async function afterWrite($: EngineInterface, raw: string) {
+async function afterRun($: EngineInterface, raws: string[]) {
+  if (raws.length === 0) return
   const place = await placeOf($)
-  const path = resolvePath(raw, place)
-  await remember($, [path], place)
-  await refresh($, path)
+  await remember($, raws, place)
+  const shown = await read($, view)
+  if (raws.some(raw => resolvePath(raw, place) === shown.path)) await refresh($)
 }
 
 export const register: Register = on => {
@@ -151,9 +158,9 @@ export const register: Register = on => {
     return result
   })
 
-  on('tool.call', { tool: ['Write', 'Edit'] }, async ($, e, next) => {
+  on('tool.call', { tool: ['Write', 'Edit', 'Bash'] }, async ($, e, next) => {
     const ran = await next(e)
-    if (isMarkdown(e.file_path)) await quietly(afterWrite($, e.file_path))
+    await quietly(afterRun($, e.tool === 'Bash' ? mentionsIn(e.command) : [e.file_path].filter(isMarkdown)))
 
     return ran
   })
@@ -165,7 +172,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'md-view' }, async ($, e) => {
-    const asked = e.args.trim().replace(/^@/, '')
+    const asked = unquoted(e.args)
     if (!asked) {
       await listFiles($)
       await present($, true)
@@ -175,11 +182,12 @@ export const register: Register = on => {
     }
     const place = await placeOf($)
     const path = resolvePath(asked, place)
-    await showFile($, path)
-    await remember($, [path], place)
+    const file = await showFile($, path)
+    if (isMarkdown(path)) await remember($, [path], place)
     await present($, true)
+    const shown = displayPath(path, place)
 
-    return { text: `Previewing ${displayPath(path, place)}.` }
+    return { text: file.error ? `Cannot preview ${shown}: ${file.error}` : `Previewing ${shown}.` }
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {

@@ -3,13 +3,13 @@ import { marked } from './fences'
 export type Place = { cwd: string; home: string }
 export type Linkified = { text: string; hrefs: string[] }
 
-type Found = { link?: string; target?: string; ticks?: string; code?: string; url?: string; at?: string; token?: string }
+type Found = { link?: string; label?: string; target?: string; ticks?: string; code?: string; url?: string; at?: string; token?: string }
 
 const NAME = String.raw`\p{L}\p{M}\p{N}_`
 const TOKEN = String.raw`[${NAME}.+~\/-][${NAME}@.+~\/-]*\.md`
 const BEFORE = String.raw`(?<![${NAME}@.+~\/:-])`
 const AFTER = String.raw`(?![${NAME}@+~\/-]|\.[${NAME}])`
-const LINK = String.raw`(?<link>\[(?:[^\]\n\\]|\\.)*\]\((?<target>[^)\n]*)\))`
+const LINK = String.raw`(?<link>\[(?<label>(?:[^\]\n\\]|\\.)*)\]\((?<target>[^)\n]*)\))`
 const CODE = '(?<!`)(?<ticks>`+)(?!`)(?<code>.+?)(?<!`)\\k<ticks>(?!`)'
 const URL_TEXT = String.raw`[a-z][a-z0-9+.-]{0,31}:\/\/[^\s<>]+`
 const URLS = new RegExp(URL_TEXT, 'gi')
@@ -42,7 +42,7 @@ export const hrefOf = (path: string): string =>
   `file://${encodeURI(path).replace(/[()#?]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)}`
 
 export const pathOfHref = (href: string, place: Place): string | null => {
-  const target = href.trim().replace(/^<|>$/g, '').replace(/\s+["'].*$/, '')
+  const target = href.trim().replace(/\s+["'].*$/, '').replace(/^<|>$/g, '').replace(/#.*$/, '')
   const isFileUrl = FILE_URL.test(target)
   if (!isFileUrl && (SCHEME.test(target) || !isMarkdown(target))) return null
   try {
@@ -72,12 +72,12 @@ export const linkify = (text: string, known: ReadonlySet<string>, place: Place):
   }
   const inline = (line: string) =>
     line.replace(INLINE, (whole: string, ...rest: unknown[]) => {
-      const { link, target = '', ticks, code = '', url, at = '', token = '' } = rest.at(-1) as Found
+      const { link, label = '', target = '', ticks, code = '', url, at = '', token = '' } = rest.at(-1) as Found
       if (url) return whole
       if (link) {
         const path = pathOfHref(target, place)
-        if (path && known.has(path)) hrefs.add(target)
-        return whole
+        const href = path ? hrefFor(path) : null
+        return href ? `[${label}](${href})` : whole
       }
       const href = ticks ? (WHOLE.test(code.trim()) ? hrefFor(code.trim()) : null) : hrefFor(token)
       if (!href) return whole

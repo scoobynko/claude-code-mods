@@ -40,9 +40,9 @@ test('links known files in prose and whole code spans, and nothing else', async 
     PLACE,
   )
   expect(linked.text).toBe(
-    'See [docs/guide.md](file:///proj/docs/guide.md) and [`README.md`](file:///proj/README.md), `cat README.md`, [r](README.md), [x](https://e.com/README.md), missing.md.\n```sh\ncat README.md\n```\n**[README.md](file:///proj/README.md)** @[docs/guide.md](file:///proj/docs/guide.md)',
+    'See [docs/guide.md](file:///proj/docs/guide.md) and [`README.md`](file:///proj/README.md), `cat README.md`, [r](file:///proj/README.md), [x](https://e.com/README.md), missing.md.\n```sh\ncat README.md\n```\n**[README.md](file:///proj/README.md)** @[docs/guide.md](file:///proj/docs/guide.md)',
   )
-  expect(linked.hrefs).toEqual(['file:///proj/docs/guide.md', 'file:///proj/README.md', 'README.md'])
+  expect(linked.hrefs).toEqual(['file:///proj/docs/guide.md', 'file:///proj/README.md'])
 })
 
 test('leaves text without known files unchanged', async () => {
@@ -80,4 +80,11 @@ test('takes a code span by its whole run of backticks', async () => {
   const text = 'Run ``cat ` README.md`` then.'
   expect(linkify(text, KNOWN, PLACE)).toEqual({ text, hrefs: [] })
   expect(linkify('Open ``README.md``.', KNOWN, PLACE).text).toBe('Open [``README.md``](file:///proj/README.md).')
+})
+
+test('points an existing link to a known file at its file url', async () => {
+  expect(linkify('[the guide](docs/guide.md#install), [titled](README.md "Title"), [gone](missing.md#x)', KNOWN, PLACE)).toEqual({
+    text: '[the guide](file:///proj/docs/guide.md), [titled](file:///proj/README.md), [gone](missing.md#x)',
+    hrefs: ['file:///proj/docs/guide.md', 'file:///proj/README.md'],
+  })
 })
