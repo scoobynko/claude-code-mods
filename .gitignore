@@ -1,0 +1,8 @@
+# Written by Claude Code each time it loads a mod from disk
+**/.claude-plugin/types/
+
+# Local working notes, not published
+briefs/
+
+.DS_Store
+node_modules/

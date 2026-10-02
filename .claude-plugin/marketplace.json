@@ -1,0 +1,15 @@
+{
+  "name": "scoobynko-mods",
+  "description": "Mods for Claude Code: live panes, animations and tweaks that hot-reload inside your session.",
+  "owner": {
+    "name": "scoobynko",
+    "url": "https://github.com/scoobynko"
+  },
+  "plugins": [
+    {
+      "name": "clawd-spinner",
+      "description": "Clawd types on a tiny laptop under the spinner: the code Claude writes floats out of the screen, input tokens float in, and he turns to face you while thinking.",
+      "source": "./plugins/clawd-spinner"
+    }
+  ]
+}
