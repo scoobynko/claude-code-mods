@@ -20,6 +20,17 @@ Then install the mods you want:
 
 Ideas and bug reports are welcome as [issues](https://github.com/scoobynko/claude-code-mods/issues), fixes and new mods as pull requests.
 
+Name the branch `<type>/<short-description>`, in lowercase. The type decides the release that merging it makes:
+
+| Branch | Release |
+| --- | --- |
+| `feat/…` | minor, `v1.2.0` → `v1.3.0` |
+| `fix/…`, `perf/…` | patch, `v1.2.0` → `v1.2.1` |
+| `breaking/…`, or a `!` after the type as in `feat!/…` | major, `v1.2.0` → `v2.0.0` |
+| `chore/…`, `docs/…`, `ci/…`, `test/…`, `refactor/…`, `style/…`, `build/…` | none |
+
+Releases are made automatically when a pull request is merged into `main`, with notes listing what was merged.
+
 ## License
 
 MIT

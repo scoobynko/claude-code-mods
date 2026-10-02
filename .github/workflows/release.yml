@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Work out the next version
+        id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git tag --points-at "$GITHUB_SHA" | grep -q '^v[0-9]'; then
+            echo "This commit is already released."
+            exit 0
+          fi
+          branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // empty')
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          version=$(.github/scripts/next-version.sh "${branch:-none}" "${latest:-v0.0.0}")
+          echo "Merged branch: ${branch:-none}. Latest: ${latest:-none}. Next: ${version:-no release}."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        if: steps.next.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.next.outputs.version }}
+        run: gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
