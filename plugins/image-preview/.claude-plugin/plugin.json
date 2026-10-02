@@ -1,0 +1,19 @@
+{
+  "name": "image-preview",
+  "version": "0.2.0",
+  "description": "/image-preview opens a pane listing every image of the session, pasted or returned by a tool, and shows the one you pick.",
+  "author": {
+    "name": "scoobynko",
+    "url": "https://github.com/scoobynko"
+  },
+  "homepage": "https://github.com/scoobynko/claude-code-mods/tree/main/plugins/image-preview",
+  "repository": "https://github.com/scoobynko/claude-code-mods",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "images",
+    "preview",
+    "pane"
+  ],
+  "types": "./types/index.d.ts"
+}
