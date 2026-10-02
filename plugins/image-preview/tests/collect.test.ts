@@ -21,6 +21,23 @@ test('finds a pasted image with the text typed beside it', () => {
   ])
 })
 
+test('keeps the record of a slash command and the pasted file’s path out of the fragment', () => {
+  const found = collect([
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: '<command-name>/image-preview</command-name>\n  <command-message>image-preview</command-message>\n  <command-args></command-args>' },
+        { type: 'text', text: '<local-command-stdout>image-preview: Images pane opened.</local-command-stdout>' },
+        { type: 'text', text: '[Image #1] message is broken somehow' },
+        image('image/png', PASTED),
+        { type: 'text', text: '[Image: source: /var/folders/tn/T/clipboard-2026-10-02-224328.png]' },
+      ],
+    },
+  ])
+
+  expect(found.map(one => one.fragment)).toEqual(['[Image #1] message is broken somehow'])
+})
+
 test('finds a tool image, named by its tool and file, with what Claude said before the call', () => {
   const found = collect([
     {
