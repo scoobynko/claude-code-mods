@@ -1,0 +1,90 @@
+import { expect, test } from 'claude-code/testing'
+
+import { displayPath, hrefOf, linkify, mentionsIn, pathOfHref, resolvePath } from '../hooks/paths'
+
+const PLACE = { cwd: '/proj', home: '/Users/me' }
+const KNOWN = new Set(['/proj/docs/guide.md', '/proj/README.md', '/proj/my notes (1).md'])
+
+test('finds .md paths in prose and commands, not urls or other suffixes', async () => {
+  expect(
+    mentionsIn(
+      'See docs/guide.md, `README.md` and @notes/plan.md. Not https://github.com/a/b/README.md or a.md.bak or x.mdx; yes ~/n.md ../up.md ./here.md /abs/p.md node_modules/@s/p/README.md (CHANGELOG.MD).',
+    ),
+  ).toEqual(['docs/guide.md', 'README.md', 'notes/plan.md', '~/n.md', '../up.md', './here.md', '/abs/p.md', 'node_modules/@s/p/README.md', 'CHANGELOG.MD'])
+})
+
+test('resolves against the cwd and the home folder', async () => {
+  expect(resolvePath('docs/../README.md', PLACE)).toBe('/proj/README.md')
+  expect(resolvePath('~/a/./b/../c.md', PLACE)).toBe('/Users/me/a/c.md')
+  expect(resolvePath('/abs/p.md', PLACE)).toBe('/abs/p.md')
+})
+
+test('an href survives spaces and parentheses', async () => {
+  const href = hrefOf('/proj/my notes (1).md')
+  expect(href).toBe('file:///proj/my%20notes%20%281%29.md')
+  expect(pathOfHref(href, PLACE)).toBe('/proj/my notes (1).md')
+  expect(pathOfHref('docs/guide.md', PLACE)).toBe('/proj/docs/guide.md')
+  expect(pathOfHref('https://example.com/README.md', PLACE)).toBeNull()
+})
+
+test('shows a path relative to the cwd, then to home', async () => {
+  expect(displayPath('/proj/docs/guide.md', PLACE)).toBe('docs/guide.md')
+  expect(displayPath('/Users/me/x.md', PLACE)).toBe('~/x.md')
+  expect(displayPath('/etc/x.md', PLACE)).toBe('/etc/x.md')
+})
+
+test('links known files in prose and whole code spans, and nothing else', async () => {
+  const linked = linkify(
+    'See docs/guide.md and `README.md`, `cat README.md`, [r](README.md), [x](https://e.com/README.md), missing.md.\n```sh\ncat README.md\n```\n**README.md** @docs/guide.md',
+    KNOWN,
+    PLACE,
+  )
+  expect(linked.text).toBe(
+    'See [docs/guide.md](file:///proj/docs/guide.md) and [`README.md`](file:///proj/README.md), `cat README.md`, [r](file:///proj/README.md), [x](https://e.com/README.md), missing.md.\n```sh\ncat README.md\n```\n**[README.md](file:///proj/README.md)** @[docs/guide.md](file:///proj/docs/guide.md)',
+  )
+  expect(linked.hrefs).toEqual(['file:///proj/docs/guide.md', 'file:///proj/README.md'])
+})
+
+test('leaves text without known files unchanged', async () => {
+  const text = 'Nothing here but missing.md and `other.md`.'
+  expect(linkify(text, KNOWN, PLACE)).toEqual({ text, hrefs: [] })
+})
+
+test('finds and links paths with non-ASCII names', async () => {
+  expect(mentionsIn('Viz docs/přehled.md a 文档/说明.md.')).toEqual(['docs/přehled.md', '文档/说明.md'])
+  expect(linkify('Viz docs/přehled.md.', new Set(['/proj/docs/přehled.md']), PLACE)).toEqual({
+    text: 'Viz [docs/přehled.md](file:///proj/docs/p%C5%99ehled.md).',
+    hrefs: ['file:///proj/docs/p%C5%99ehled.md'],
+  })
+  expect(pathOfHref('file:///proj/docs/p%C5%99ehled.md', PLACE)).toBe('/proj/docs/přehled.md')
+})
+
+test('leaves fences nested in lists and quotes alone', async () => {
+  const text = '- a\n  - b\n    ```sh\n    cat README.md\n    ```\n> ```\n> cat README.md\n> ```\n1. ```sh\n   cat README.md\n   ```'
+  expect(linkify(text, KNOWN, PLACE)).toEqual({ text, hrefs: [] })
+})
+
+test('does not take inline triple backticks for a fence', async () => {
+  expect(linkify('```code``` inline\nSee README.md', KNOWN, PLACE).text).toBe(
+    '```code``` inline\nSee [README.md](file:///proj/README.md)',
+  )
+})
+
+test('leaves a url that ends in a known file name alone', async () => {
+  const text = 'Open https://example.com/view?file=README.md or file:///proj/README.md#top.'
+  expect(linkify(text, KNOWN, PLACE)).toEqual({ text, hrefs: [] })
+  expect(mentionsIn(text)).toEqual([])
+})
+
+test('takes a code span by its whole run of backticks', async () => {
+  const text = 'Run ``cat ` README.md`` then.'
+  expect(linkify(text, KNOWN, PLACE)).toEqual({ text, hrefs: [] })
+  expect(linkify('Open ``README.md``.', KNOWN, PLACE).text).toBe('Open [``README.md``](file:///proj/README.md).')
+})
+
+test('points an existing link to a known file at its file url', async () => {
+  expect(linkify('[the guide](docs/guide.md#install), [titled](README.md "Title"), [gone](missing.md#x)', KNOWN, PLACE)).toEqual({
+    text: '[the guide](file:///proj/docs/guide.md), [titled](file:///proj/README.md), [gone](missing.md#x)',
+    hrefs: ['file:///proj/docs/guide.md', 'file:///proj/README.md'],
+  })
+})

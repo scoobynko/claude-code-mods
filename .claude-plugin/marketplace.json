@@ -15,6 +15,11 @@
       "name": "image-preview",
       "description": "/image-preview opens a pane listing every image of the session, pasted or returned by a tool, and shows the one you pick.",
       "source": "./plugins/image-preview"
+    },
+    {
+      "name": "md-view",
+      "description": "Click a Markdown file in Claude's reply to read it rendered in a side pane, or list the session's Markdown files with /md-view.",
+      "source": "./plugins/md-view"
     }
   ]
 }
