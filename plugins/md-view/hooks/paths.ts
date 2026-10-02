@@ -50,6 +50,9 @@ export const displayPath = (path: string, cwd: string, home: string): string => 
   return path
 }
 
+export const fitStart = (text: string, columns: number): string =>
+  text.length > columns ? `…${text.slice(text.length - columns + 1)}` : text
+
 export type Linkified = { text: string; hrefs: string[] }
 
 export const linkify = (text: string, known: ReadonlySet<string>, cwd: string, home: string): Linkified => {

@@ -203,3 +203,16 @@ test("stacks a wide table at the pane's width", async ($, on) => {
     await ui.unmount()
   }
 })
+
+test('cuts a path longer than the pane from its start', async ($, on) => {
+  const session = host(on, [])
+  session.disk['/elsewhere/a-very-long-folder-name/another-long-folder-name/notes.md'] = '# Notes'
+  await start($)
+  await say($, session, '', [{ name: 'Read', input: { file_path: '/elsewhere/a-very-long-folder-name/another-long-folder-name/notes.md' } }])
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 30 } })
+
+    expect((await ui.find({ type: 'Button', key: 'file-0' }))?.props.label).toBe('…her-long-folder-name/notes.md')
+    await ui.unmount()
+  }
+})

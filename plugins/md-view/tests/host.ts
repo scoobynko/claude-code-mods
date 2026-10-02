@@ -52,7 +52,6 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
     opened.push(e)
     return { value: { isPlaced: true } }
   })
-  on('ui.scroll', () => ({}))
   return { disk, opened, step }
 }
 

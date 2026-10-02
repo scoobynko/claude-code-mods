@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { MdView } from '../types'
 import { layout, load } from './document'
-import { displayPath, hasMention, linkify, mentionsIn, pathOfHref, resolvePath } from './paths'
+import { displayPath, fitStart, hasMention, linkify, mentionsIn, pathOfHref, resolvePath } from './paths'
 
 const PANE = 'md-view'
 const TITLE = 'Markdown'
@@ -180,11 +180,13 @@ export const register: Register = on => {
       await showFile($, path)
       await rememberSafely($, [path])
       await openPane($, true)
+      await scrollToStart($)
 
       return { text: `Previewing ${displayPath(path, cwd, home)}.` }
     }
     await listFiles($)
     await openPane($, true)
+    await scrollToStart($)
     const count = (await read($, files)).length
     if (count === 0) return { text: 'No Markdown files in this session yet.' }
 
@@ -234,7 +236,7 @@ export const register: Register = on => {
               plain
               dimColor={path !== shown.path}
               autoFocus={index === focused ? true : undefined}
-              label={displayPath(path, cwd, home)}
+              label={fitStart(displayPath(path, cwd, home), columns)}
               onPress={() => pick($, path)}
             />
           ))}
