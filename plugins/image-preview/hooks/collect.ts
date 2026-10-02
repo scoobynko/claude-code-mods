@@ -16,6 +16,8 @@ const IMAGE_PATH = new RegExp(
   'giu',
 )
 const WHOLE_PATH = new RegExp(`^[^\\n]{1,512}${EXTENSION}$`, 'iu')
+const HARNESS_TEXT =
+  /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat)>[\s\S]*?<\/\1>|\[Image: source: [^\]\n]*\]/g
 const CHANGE_DIR = /(?:^|[;&|(\n])\s*cd\s+(?:"([^"\n]+)"|'([^'\n]+)'|((?:[^\s;&|()\\]|\\.)+))/g
 const MAX_FRAGMENT = 400
 const MAX_PATHS_PER_CALL = 12
@@ -72,7 +74,9 @@ const isRooted = (path: string) => path.startsWith('/') || path.startsWith('~')
 const proseOf = (blocks: readonly Block[]) =>
   blocks
     .flatMap(block =>
-      block.type === 'text' && typeof block.text === 'string' && !block.text.startsWith('<system-reminder>') ? [block.text] : [],
+      block.type === 'text' && typeof block.text === 'string' && !block.text.startsWith('<system-reminder>')
+        ? [block.text.replace(HARNESS_TEXT, '')]
+        : [],
     )
     .join(' ')
 

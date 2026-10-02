@@ -400,24 +400,29 @@ export const register: Register = on => {
       )
     }
 
+    const last = Math.min(list.length, first + LIST_ROWS)
+    const rows = (from: number, to: number) =>
+      list.slice(from, to).map((item, i) => {
+        const place = from + i + 1
+        const time = timeOf(item)
+        const text = Number.isFinite(time) ? `${item.label}  ${clockTime(time)}` : item.label
+        const row = place <= 9 ? { hotkey: String(place), label: text } : { label: `${place}: ${text}` }
+        const pick = () => void inOrder(() => show($, item.id, undefined, true))
+        return <Button key={`pick-${item.id}`} plain {...row} dimColor={item.id !== current} onPress={pick} />
+      })
+
     return (
       <Box flexDirection="column">
-        {list.slice(first, first + LIST_ROWS).map((item, i) => {
-          const place = first + i + 1
-          const time = timeOf(item)
-          const text = Number.isFinite(time) ? `${item.label}  ${clockTime(time)}` : item.label
-          const row = place <= 9 ? { hotkey: String(place), label: text } : { label: `${place}: ${text}` }
-          const pick = () => void inOrder(() => show($, item.id, undefined, true))
-          return <Button key={`pick-${item.id}`} plain {...row} dimColor={item.id !== current} onPress={pick} />
-        })}
-        {list.length > LIST_ROWS && <Text dimColor>{list.length} images</Text>}
-        <Box marginTop={1} flexDirection="column">
+        {rows(first, at + 1)}
+        <Box marginBottom={at + 1 < last || list.length > LIST_ROWS ? 1 : 0} flexDirection="column">
           {picture()}
           {e.surface === 'terminal' && actions()}
           <Text dimColor wrap="wrap">
             {shown.fragment.slice(0, columns * FRAGMENT_ROWS)}
           </Text>
         </Box>
+        {rows(at + 1, last)}
+        {list.length > LIST_ROWS && <Text dimColor>{list.length} images</Text>}
       </Box>
     )
   })

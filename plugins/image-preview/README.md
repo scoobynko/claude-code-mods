@@ -1,6 +1,6 @@
 # image-preview
 
-`/image-preview` opens a pane beside the conversation with the images of the session: the ones you pasted, the ones tools returned (screenshots, `Read` of an image, MCP results), in the main conversation and in subagents, and image files written during the session. Pick one to see it large, with a few lines of the message it came with.
+`/image-preview` opens a pane beside the conversation with the images of the session: the ones you pasted, the ones tools returned (screenshots, `Read` of an image, MCP results), in the main conversation and in subagents, and image files written during the session. Pick one to see it right under its row, with a few lines of the message it came with.
 
 - Newest first. `1`–`9`, or the arrows and Enter, pick an image; Esc closes the pane.
 - New images show up while the pane is open.
