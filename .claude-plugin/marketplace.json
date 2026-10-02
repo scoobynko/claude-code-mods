@@ -10,6 +10,11 @@
       "name": "clawd-spinner",
       "description": "Clawd types on a tiny laptop under the spinner: the code Claude writes floats out of the screen, input tokens float in, and he turns to face you while thinking.",
       "source": "./plugins/clawd-spinner"
+    },
+    {
+      "name": "md-view",
+      "description": "Click a Markdown file in Claude's reply to read it rendered in a side pane, or list the session's Markdown files with /md-view.",
+      "source": "./plugins/md-view"
     }
   ]
 }

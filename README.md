@@ -15,6 +15,7 @@ Then install the mods you want:
 | Mod | What it does | Install |
 | --- | --- | --- |
 | [clawd-spinner](plugins/clawd-spinner) | Clawd types on a tiny laptop under the spinner. The code Claude writes floats out of the screen, input tokens float in, and he turns to face you while thinking. | `/plugin install clawd-spinner@scoobynko-mods` |
+| [md-view](plugins/md-view) | Click a Markdown file in Claude's reply to read it rendered in a side pane. `/md-view` lists every Markdown file the session has touched. | `/plugin install md-view@scoobynko-mods` |
 
 ## Contributing
 
