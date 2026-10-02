@@ -204,3 +204,110 @@ test('keeps animating after a reload in the middle of a turn', async ($, on) => 
 
   expect(new Set(blits).size).toBeGreaterThan(1)
 })
+
+type Play = { asset?: string; shouldLoop: boolean; gain?: number; isStopped: boolean }
+
+const captureSound = (on: On) => {
+  const plays: Play[] = []
+  on('audio.play', async (_, e, next) => {
+    const play: Play = { asset: e.clip.asset, shouldLoop: e.shouldLoop, gain: e.gain, isStopped: false }
+    plays.push(play)
+    await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+    play.isStopped = true
+    return { value: undefined }
+  })
+  return plays
+}
+
+const answerStore = (on: On, entries: Record<string, unknown> = {}) => {
+  const store = new Map(Object.entries(entries))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  return store
+}
+
+const soundSwitch = async (ui: Mounted<'terminal', 'Spinner'>) => {
+  const { label, dimColor } = (await ui.find({ type: 'Button', key: 'sound' }))?.props ?? {}
+  return `${label} ${dimColor ? 'dim' : 'lit'}`
+}
+
+const startTyping = async ($: Engine, on: On, saved: Record<string, unknown> = {}) => {
+  answerSpinner(on)
+  answerTurns(on)
+  const clock = mock.clock(on)
+  captureBlits(on)
+  const store = answerStore(on, saved)
+  const plays = captureSound(on)
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  await clock.advance(200)
+  return { clock, store, plays, ui }
+}
+
+test('is silent until the sound is switched on, with a dim [♪] under Clawd saying so', async ($, on) => {
+  const { plays, ui } = await startTyping($, on)
+
+  expect(plays).toHaveLength(0)
+  expect(await soundSwitch(ui)).toBe('[♪] dim')
+  const order = (await ui.findAll({})).flatMap(one => (one.key === 'clawd' || one.key === 'sound' ? [one.key] : []))
+  expect(order).toEqual(['clawd', 'sound'])
+})
+
+test('loops one quiet typing sound while he types, once switched on', async ($, on) => {
+  const { clock, plays, ui } = await startTyping($, on, { sound: true })
+  await clock.advance(400)
+
+  expect(await soundSwitch(ui)).toBe('[♪] lit')
+  expect(plays).toHaveLength(1)
+  expect(plays[0]).toMatchObject({ asset: 'sounds/typing.wav', shouldLoop: true, isStopped: false })
+  expect(plays[0]?.gain).toBeLessThan(1)
+})
+
+test('switches the sound on and off from the button, and remembers it', async ($, on) => {
+  const { clock, store, plays, ui } = await startTyping($, on)
+
+  await ui.press({ key: 'sound' })
+  await clock.advance(100)
+
+  expect(await soundSwitch(ui)).toBe('[♪] lit')
+  expect(store.get('sound')).toBe(true)
+  expect(plays.map(play => play.isStopped)).toEqual([false])
+
+  await ui.press({ key: 'sound' })
+  await clock.advance(100)
+
+  expect(await soundSwitch(ui)).toBe('[♪] dim')
+  expect(store.get('sound')).toBe(false)
+  expect(plays.map(play => play.isStopped)).toEqual([true])
+})
+
+test('switches the sound from the /clawd-sound command too', async ($, on) => {
+  const { store } = await startTyping($, on)
+  const run = () =>
+    $.command.run({ command: 'clawd-sound', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } })
+
+  expect((await run()).text).toBe('Typing sound on.')
+  expect(store.get('sound')).toBe(true)
+  expect((await run()).text).toBe('Typing sound off.')
+})
+
+test('falls silent while he thinks and when the turn ends', async ($, on) => {
+  const { clock, plays, ui } = await startTyping($, on, { sound: true })
+  await ui.redraw({ ...PROPS, mode: 'thinking' })
+  await clock.advance(200)
+
+  expect(plays.map(play => play.isStopped)).toEqual([true])
+
+  await ui.redraw(PROPS)
+  await clock.advance(200)
+
+  expect(plays.map(play => play.isStopped)).toEqual([true, false])
+
+  await $.turn.complete({ answer: '', durationMs: 600, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(200)
+
+  expect(plays.map(play => play.isStopped)).toEqual([true, true])
+})
