@@ -1,10 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { collect, imageId, imagePaths } from '../hooks/collect'
+import { arrivals, collect, imageId, imagePaths } from '../hooks/collect'
+import { PASTED, SHOT, call, image } from './fixtures'
 
-const image = (media_type: string, data: string) => ({ type: 'image', source: { type: 'base64', media_type, data } })
-const PASTED = 'P'.repeat(300)
-const SHOT = 'S'.repeat(300)
 
 test('finds a pasted image with the text typed beside it', () => {
   const found = collect([
@@ -49,19 +47,13 @@ test('falls back to the call itself when Claude said nothing, and names an MCP t
 })
 
 test('finds image paths in a call whose result held no image', () => {
-  const found = collect([
-    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'screencapture -x out/shot.png && ls *.png' } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] },
-  ])
+  const found = collect(call('Bash', { command: 'screencapture -x out/shot.png && ls *.png' }))
 
   expect(found).toMatchObject([{ kind: 'path', path: 'out/shot.png', label: 'Bash shot.png' }])
 })
 
 test('lists a read image once, not also as a path', () => {
-  const found = collect([
-    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/work/a.png' } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [image('image/png', SHOT)] }] },
-  ])
+  const found = collect(call('Read', { file_path: '/work/a.png' }, 't1', [image('image/png', SHOT)]))
 
   expect(found.map(one => one.kind)).toEqual(['block'])
 })
@@ -88,11 +80,6 @@ test('tells images apart by their bytes', () => {
 test('reads image paths out of any input', () => {
   expect(imagePaths({ command: 'convert a.jpeg ./b.webp', nested: ['~/c.GIF', 'notes.txt'] })).toEqual(['a.jpeg', './b.webp', '~/c.GIF'])
 })
-
-const call = (name: string, input: object, id = 't1') => [
-  { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
-  { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
-]
 
 test('reads a long unbroken input quickly', () => {
   const started = Date.now()
@@ -147,10 +134,7 @@ test('takes a whole MCP argument as a path, spaces and all', () => {
 })
 
 test('finds a file a command only printed', () => {
-  const found = collect([
-    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python plot.py' } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'Saved chart to out/chart.png' }] }] },
-  ])
+  const found = collect(call('Bash', { command: 'python plot.py' }, 't1', [{ type: 'text', text: 'Saved chart to out/chart.png' }]))
 
   expect(found).toMatchObject([{ kind: 'path', path: 'out/chart.png', label: 'Bash chart.png', from: 'call' }])
 })
@@ -173,4 +157,46 @@ test('remembers the folders commands moved into', () => {
   ])
 
   expect(found).toMatchObject([{ kind: 'path', path: 'fig.png', bases: ['../out', 'build dir'] }])
+})
+
+const rows = (name: string, input: object, result: unknown) => {
+  const [asked, answered] = call(name, input, 't1', result)
+  return { asked: asked.content, answered: answered.content }
+}
+
+test('counts an image in a prompt or a tool result as news', () => {
+  const pasted = arrivals('user', [{ type: 'text', text: 'look' }, image('image/png', PASTED)], new Map())
+  const { answered } = rows('Read', { file_path: '/work/a.png' }, [image('image/jpeg', SHOT)])
+  const read = arrivals('user', answered, new Map())
+
+  expect(pasted).toEqual({ images: [{ data: PASTED, mediaType: 'image/png' }], isNews: true })
+  expect(read).toEqual({ images: [{ data: SHOT, mediaType: 'image/jpeg' }], isNews: true })
+})
+
+test('counts the result of a command that named or printed an image file as news', () => {
+  const pending = new Map<string, boolean>()
+  const named = rows('Bash', { command: 'screencapture -x shot.png' }, 'ok')
+  const printed = rows('mcp__browser__screenshot', {}, 'Saved to out/page.png')
+
+  expect(arrivals('assistant', named.asked, pending).isNews).toBe(false)
+  expect(arrivals('user', named.answered, pending).isNews).toBe(true)
+  expect(arrivals('assistant', printed.asked, pending).isNews).toBe(false)
+  expect(arrivals('user', printed.answered, pending).isNews).toBe(true)
+  expect(pending.size).toBe(0)
+})
+
+test('counts a file Claude mentions as news', () => {
+  expect(arrivals('assistant', [{ type: 'text', text: 'Saved it to out/chart.png.' }], new Map()).isNews).toBe(true)
+})
+
+test('does not count what cannot add an image', () => {
+  const pending = new Map<string, boolean>()
+  const grep = rows('Grep', { pattern: 'logo' }, 'assets/logo.png:1: binary')
+  const quiet = rows('Bash', { command: 'ls' }, 'README.md')
+
+  expect(arrivals('assistant', grep.asked, pending).isNews).toBe(false)
+  expect(arrivals('user', grep.answered, pending).isNews).toBe(false)
+  expect(arrivals('assistant', quiet.asked, pending).isNews).toBe(false)
+  expect(arrivals('user', quiet.answered, pending).isNews).toBe(false)
+  expect(arrivals('user', [{ type: 'text', text: 'see docs/a.png' }], pending).isNews).toBe(false)
 })

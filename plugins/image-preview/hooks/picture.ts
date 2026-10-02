@@ -1,4 +1,4 @@
-export type Size = { width: number; height: number }
+type Size = { width: number; height: number }
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47]
 const HEADER_BYTES = 24

@@ -3,11 +3,11 @@ export type ImageItem = {
   label: string
   fragment: string
   at?: number
-  mtime?: number
   agentId?: string
+  file?: { path: string; version: number }
 }
 
-export type ImageFile = { file: string; width: number; height: number; stamp?: number } | { error: string }
+export type ImageFile = ({ file: string; width: number; height: number } | { error: string }) & { version?: number }
 
 declare module 'claude-code' {
   interface PluginState {

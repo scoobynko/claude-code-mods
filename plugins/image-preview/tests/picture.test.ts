@@ -1,17 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import { fit, pngSize } from '../hooks/picture'
-
-const header = (width: number, height: number) => {
-  const bytes = new Uint8Array(24)
-  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
-  new DataView(bytes.buffer).setUint32(16, width)
-  new DataView(bytes.buffer).setUint32(20, height)
-  return btoa(String.fromCharCode(...bytes))
-}
+import { pngHeader } from './fixtures'
 
 test('reads the size out of a PNG header', () => {
-  expect(pngSize(`${header(800, 400)}\n`)).toEqual({ width: 800, height: 400 })
+  expect(pngSize(`${pngHeader(800, 400)}\n`)).toEqual({ width: 800, height: 400 })
 })
 
 test('refuses what is not a PNG', () => {
