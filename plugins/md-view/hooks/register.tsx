@@ -3,7 +3,7 @@ import type { EngineInterface, FsStat, Register } from 'claude-code'
 
 import type { MdFile, MdView } from '../types'
 import { CONTROL, MARKDOWN_CHARS, layout, load } from './document'
-import { displayPath, fitStart, hasMention, isMarkdown, linkify, mentionsIn, pathOfHref, resolvePath } from './paths'
+import { displayPath, fitStart, hasMention, isMarkdown, linkify, mentionsIn, pathOfHref, resolvePath, splitPath } from './paths'
 import type { Place } from './paths'
 
 type ToolUse = readonly [tool: string, input: unknown]
@@ -11,6 +11,11 @@ type ToolUse = readonly [tool: string, input: unknown]
 const PANE = 'md-view'
 const TITLE = 'Markdown'
 const NO_FILES = 'No Markdown files in this session yet.'
+const ICON = 'M↓'
+const ICON_COLOR = 'claude'
+const LAST_VIEWED = 'last viewed'
+const GAP = 2
+const MIN_FOLDER = 4
 const MAX_FILES = 200
 const MAX_CANDIDATES = 400
 const MIN_COLUMNS = 20
@@ -224,18 +229,22 @@ export const register: Register = on => {
       const focused = Math.max(0, known.indexOf(shown.path))
 
       return (
-        <Box flexDirection="column" width={columns}>
+        <Box flexDirection="column" width={columns} gap={1}>
           <Text dimColor>{known.length === 0 ? NO_FILES : `${known.length} Markdown ${plural(known.length)}, newest first`}</Text>
-          {known.map((path, index) => (
-            <Button
-              key={`file-${index}`}
-              plain
-              dimColor={path !== shown.path}
-              autoFocus={index === focused ? true : undefined}
-              label={fitStart(displayPath(path, place), columns)}
-              onPress={() => pick($, path)}
-            />
-          ))}
+          {known.map((path, index) => {
+            const { folder, name } = splitPath(displayPath(path, place))
+            const isLast = path === shown.path
+            const room = columns - ICON.length - name.length - 2 * GAP - (isLast ? LAST_VIEWED.length + GAP : 0)
+
+            return (
+              <Box flexDirection="row" gap={GAP}>
+                <Text color={ICON_COLOR}>{ICON}</Text>
+                <Button key={`file-${index}`} plain autoFocus={index === focused ? true : undefined} label={name} onPress={() => pick($, path)} />
+                {folder !== '' && room >= MIN_FOLDER && <Text dimColor>{fitStart(folder, room)}</Text>}
+                {isLast && <Text dimColor>{LAST_VIEWED}</Text>}
+              </Box>
+            )
+          })}
         </Box>
       )
     }

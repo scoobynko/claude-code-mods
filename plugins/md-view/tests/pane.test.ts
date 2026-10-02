@@ -9,7 +9,10 @@ test("lists what Claude brought up, newest first, without missing files or the p
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
-    expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['docs/guide.md', 'README.md'])
+    expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['guide.md', 'README.md'])
+    expect(await ui.findAll({ type: 'Text', text: 'M↓' })).toHaveLength(2)
+    expect(await ui.find({ type: 'Text', text: 'docs/' })).toMatchObject({ props: { dimColor: true } })
+    expect(await ui.drawn()).toMatchObject({ type: 'Box', props: { flexDirection: 'column', gap: 1 } })
     expect(await ui.find({ type: 'Text', text: '2 Markdown files, newest first' })).toBeDefined()
     await ui.unmount()
   }
@@ -44,7 +47,7 @@ test('adds a file Claude mentions later', async ($, on) => {
     const ui = await $.ui.mount({ ...PANE, surface })
     await say($, session, surface === 'terminal' ? 'See README.md.' : 'And docs/guide.md too.')
 
-    expect((await ui.findAll({ type: 'Button' })).at(0)?.props.label).toBe(surface === 'terminal' ? 'README.md' : 'docs/guide.md')
+    expect((await ui.findAll({ type: 'Button' })).at(0)?.props.label).toBe(surface === 'terminal' ? 'README.md' : 'guide.md')
     await ui.unmount()
   }
 })
@@ -55,7 +58,7 @@ test('adds a file Claude runs a command on', async ($, on) => {
   await say($, session, '', [{ name: 'Bash', input: { command: 'wc -l notes/todo.md' } }])
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
-  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['notes/todo.md'])
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['todo.md'])
 })
 
 test('picking a file renders it', async ($, on) => {
@@ -80,7 +83,8 @@ test('going back to the list keeps the last file focused', async ($, on) => {
     await ui.press({ key: 'file-1' })
     await ui.press({ key: 'files' })
 
-    expect(await ui.find({ type: 'Button', key: 'file-1' })).toMatchObject({ props: { label: 'README.md', autoFocus: true, dimColor: false } })
+    expect(await ui.find({ type: 'Button', key: 'file-1' })).toMatchObject({ props: { label: 'README.md', autoFocus: true } })
+    expect(await ui.findAll({ type: 'Text', text: 'last viewed' })).toHaveLength(1)
     expect((await ui.find({ type: 'Button', key: 'file-0' }))?.props.autoFocus).toBeUndefined()
     await ui.unmount()
   }
@@ -188,7 +192,7 @@ test('lists a file Claude has just written', async ($, on) => {
   session.disk['/proj/docs/plan.md'] = '# Plan'
   await $.tool.call({ tool: 'Write', tool_use_id: 'write-1', file_path: '/proj/docs/plan.md', content: '# Plan' })
 
-  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['docs/plan.md'])
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['plan.md'])
 })
 
 test("stacks a wide table at the pane's width", async ($, on) => {
@@ -205,7 +209,7 @@ test("stacks a wide table at the pane's width", async ($, on) => {
   }
 })
 
-test('cuts a path longer than the pane from its start', async ($, on) => {
+test('cuts a folder longer than the pane from its start', async ($, on) => {
   const session = host(on, [])
   session.disk['/elsewhere/a-very-long-folder-name/another-long-folder-name/notes.md'] = '# Notes'
   await start($)
@@ -213,7 +217,8 @@ test('cuts a path longer than the pane from its start', async ($, on) => {
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 30 } })
 
-    expect((await ui.find({ type: 'Button', key: 'file-0' }))?.props.label).toBe('…her-long-folder-name/notes.md')
+    expect((await ui.find({ type: 'Button', key: 'file-0' }))?.props.label).toBe('notes.md')
+    expect(await ui.find({ type: 'Text', text: '…ng-folder-name/' })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -230,7 +235,7 @@ test('lists a file a command has just created', async ($, on) => {
   session.disk['/proj/docs/new.md'] = '# New'
   await $.tool.call({ tool: 'Bash', tool_use_id: 'bash-1', command: 'pandoc in.docx -o docs/new.md' })
 
-  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['docs/new.md'])
+  expect((await ui.findAll({ type: 'Button' })).map(button => button.props.label)).toEqual(['new.md'])
 })
 
 test('/md-view says when it cannot preview the path', async ($, on) => {

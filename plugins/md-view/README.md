@@ -3,7 +3,7 @@
 Read Markdown files without leaving Claude Code.
 
 - **Click**: when Claude mentions a `.md` file in a reply, the path becomes a link. A single click opens the file rendered in a pane docked on the right, the way `/diff` docks. Ctrl- or alt-click keeps your terminal's own behaviour.
-- **`/md-view`**: opens the pane with every Markdown file that has come up in the session, newest first. Arrows and Enter pick one; the last file you viewed stays highlighted.
+- **`/md-view`**: opens the pane with every Markdown file that has come up in the session, newest first. Arrows and Enter pick one; the last file you viewed is marked and holds the focus.
 - **`/md-view <path>`**: previews that file directly.
 
 The pane shows the file the way a reply is drawn: headings, lists, tables, code fences. Scroll with the wheel, press Esc to close. If Claude edits the file you are looking at, the preview updates.

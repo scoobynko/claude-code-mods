@@ -58,6 +58,11 @@ export const displayPath = (path: string, { cwd, home }: Place): string => {
   return path
 }
 
+export const splitPath = (path: string): { folder: string; name: string } => {
+  const at = path.lastIndexOf('/') + 1
+  return { folder: path.slice(0, at), name: path.slice(at) }
+}
+
 export const fitStart = (text: string, columns: number): string =>
   text.length > columns ? `…${text.slice(text.length - columns + 1)}` : text
 
