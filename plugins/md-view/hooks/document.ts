@@ -13,12 +13,15 @@ const OPENER_CHARS = 200
 const FRONT_MATTER_CHARS = 4_000
 const FRONT_MATTER = /^---\n(?=[\w-]+:)([\s\S]*?)\n---(\n|$)/
 const RULE_CELL = /^:?-+:?$/
+const TOP_FENCE = /^(?:`{3,}|~{3,})\s*([^\s`]*)/
 const MARKS = /\p{M}/gu
 const WIDE = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6\u{1f300}-\u{1faff}\u{20000}-\u{3fffd}]/gu
 
 export type Loaded = { text: string; totalChars: number }
+export type Part = { text: string; language: string | null }
 
-type Layout = { text: string; columns: number; parts: string[] }
+type Segment = { lines: string[]; language: string | null }
+type Layout = { text: string; columns: number; parts: Part[] }
 
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff
 
@@ -165,11 +168,34 @@ const chunk = (lines: string[]): string[] => {
   return chunks.map(block => block.join('\n'))
 }
 
+const segmentsOf = (lines: string[]): Segment[] => {
+  const segments: Segment[] = [{ lines: [], language: null }]
+  let fence = ''
+  for (const line of lines) {
+    const next = fenceAfter(fence, line)
+    const language = !fence && next ? (TOP_FENCE.exec(line)?.[1] ?? null) : null
+    if (language !== null) segments.push({ lines: [], language })
+    const open = segments.at(-1)
+    open?.lines.push(line)
+    if (fence && !next && open?.language !== null) segments.push({ lines: [], language: null })
+    fence = next
+  }
+  const open = segments.at(-1)
+  if (fence && open?.language !== null) open?.lines.push(fence)
+  return segments.filter(segment => segment.lines.length > 0)
+}
+
+const partsOf = ({ lines, language }: Segment): Part[] => {
+  if (language === null) return chunk(lines).map(text => ({ text, language }))
+  const pieces = sizeOf(lines) > CHUNK_CHARS ? split(lines) : [lines]
+  return pieces.map(piece => ({ text: piece.join('\n'), language }))
+}
+
 let last: Layout | null = null
 
-export const layout = (text: string, columns: number): string[] => {
+export const layout = (text: string, columns: number): Part[] => {
   if (last?.text === text && last.columns === columns) return last.parts
-  const parts = chunk(narrowTables(fenceFrontMatter(text).split('\n'), columns))
+  const parts = segmentsOf(narrowTables(fenceFrontMatter(text).split('\n'), columns)).flatMap(partsOf)
   last = { text, columns, parts }
   return parts
 }

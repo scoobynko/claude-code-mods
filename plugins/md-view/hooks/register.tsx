@@ -16,6 +16,7 @@ const ICON_COLOR = 'claude'
 const LAST_VIEWED = 'last viewed'
 const GAP = 2
 const MIN_FOLDER = 4
+const CODE_INDENT = 2
 const MAX_FILES = 200
 const MAX_CANDIDATES = 400
 const MIN_COLUMNS = 20
@@ -264,8 +265,9 @@ export const register: Register = on => {
         {error !== '' && <Text dimColor>{error}</Text>}
         {error === '' && parts.length === 0 && <Text dimColor>Empty file.</Text>}
         {parts.map((part, index) => (
-          <Box marginTop={1}>
-            <Markdown key={`part-${index}`} text={part} />
+          <Box marginTop={1} flexDirection="column" paddingLeft={part.language === null ? 0 : CODE_INDENT}>
+            {part.language && <Text dimColor>{part.language}</Text>}
+            <Markdown key={`part-${index}`} text={part.text} />
           </Box>
         ))}
         {totalChars > text.length && (

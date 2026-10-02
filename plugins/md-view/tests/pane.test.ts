@@ -267,3 +267,19 @@ test('does not read an unchanged file again at the end of a turn', async ($, on)
 
   expect(reads).toEqual(['/proj/docs/guide.md'])
 })
+
+test('indents a code block under its language', async ($, on) => {
+  const { disk } = host(on)
+  disk['/proj/docs/guide.md'] = '# Guide\n\n```js\nconsole.log(1)\n```\n\nDone.'
+  await start($)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'file-0' })
+
+    expect((await ui.findAll({ type: 'Markdown' })).map(part => part.props.text)).toEqual(['# Guide', '```js\nconsole.log(1)\n```', 'Done.'])
+    expect(await ui.find({ type: 'Text', text: 'js' })).toMatchObject({ props: { dimColor: true } })
+    expect((await ui.findAll({ type: 'Box' })).filter(box => box.props.paddingLeft === 2)).toHaveLength(1)
+    await ui.press({ key: 'files' })
+    await ui.unmount()
+  }
+})

@@ -6,7 +6,7 @@ Read Markdown files without leaving Claude Code.
 - **`/md-view`**: opens the pane with every Markdown file that has come up in the session, newest first. Arrows and Enter pick one; the last file you viewed is marked and holds the focus.
 - **`/md-view <path>`**: previews that file directly.
 
-The pane shows the file the way a reply is drawn: headings, lists, tables, code fences. Scroll with the wheel, press Esc to close. If Claude edits the file you are looking at, the preview updates.
+The pane shows the file the way a reply is drawn: headings, lists, tables, code fences. Fenced code blocks are indented under their language so they stand apart from prose. Scroll with the wheel, press Esc to close. If Claude edits the file you are looking at, the preview updates.
 
 ## Install
 
