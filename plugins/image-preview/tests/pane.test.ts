@@ -5,7 +5,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import { PASTED, SHOT, call, image, pngHeader } from './fixtures'
 
 const PROPS = { title: 'Images', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
-const MOUNT = { plugin: 'image-preview', component: 'Pane', requestId: 'images', props: PROPS } as const
+const VIEWPORT = { columns: 139, rows: 50, isFullscreen: true }
+const MOUNT = { plugin: 'image-preview', component: 'Pane', requestId: 'images', props: PROPS, viewport: VIEWPORT } as const
 const DIR = '/tmp/t/claude-image-preview-s1'
 
 const CONVERSATION = [
@@ -78,7 +79,7 @@ type Drawn = Pick<Mounted, 'find' | 'findAll'>
 const terminal = ($: Engine) => $.ui.mount({ ...MOUNT, surface: 'terminal' })
 const preview = (ui: Drawn) => ui.find({ type: 'Image', key: 'preview' })
 
-const buttons = (ui: Drawn) => ui.findAll({ type: 'Button' })
+const buttons = async (ui: Drawn) => (await ui.findAll({ type: 'Button' })).filter(button => String(button.key).startsWith('pick-'))
 const labels = async (ui: Drawn) => (await buttons(ui)).map(button => String(button.props.label))
 
 test('opens the Images pane and lists pasted and tool images, newest first', async ($, on) => {
@@ -620,4 +621,72 @@ test('stops saving images when the session ends, and removes the folder last', a
   await ended
 
   expect(runs.map(run => run.argv[0])).toEqual(['sh', 'rm'])
+})
+
+test('enlarges the image on a click: a wide pane with no list, and back on another', async ($, on) => {
+  const { opens } = answerSession(on, CONVERSATION)
+  answerProcess(on, { width: 100, height: 4000 })
+  await open($)
+  const ui = await terminal($)
+  const before = Number((await preview(ui))?.props.rows)
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', in: 'zone' })
+
+  expect(opens.at(-1)).toEqual({ id: 'images', title: 'Images', focus: true, closeOnEscape: true, columns: 175 })
+  expect(await buttons(ui)).toHaveLength(0)
+  expect(Number((await preview(ui))?.props.rows)).toBeGreaterThan(before)
+  expect(await ui.find({ type: 'Text', text: 'Let me look at the mockup.' })).toBeUndefined()
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', in: 'zone' })
+
+  expect(opens.at(-1)).toEqual({ id: 'images', title: 'Images', focus: true, closeOnEscape: true })
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('enlarges from the keyboard too', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+
+  await ui.press({ key: 'enlarge' })
+
+  expect(await buttons(ui)).toHaveLength(0)
+  expect((await ui.find({ type: 'Button', key: 'enlarge' }))?.props).toMatchObject({ hotkey: 'e', label: 'Back to list' })
+})
+
+test('opens the shown image in the system viewer', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  const file = String(((await preview(ui))?.props.source as { file?: string } | undefined)?.file)
+
+  await ui.press({ key: 'view' })
+
+  expect(runs.at(-1)?.argv.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(runs.at(-1)?.argv[2]).toContain('open "$1"')
+  expect(runs.at(-1)?.argv.slice(3)).toEqual(['sh', file])
+})
+
+test('opens on the list again after an enlarged pane was closed', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  await ui.press({ key: 'enlarge' })
+
+  await open($)
+
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('offers no enlarging where no picture is drawn', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Button', key: 'enlarge' })).toBeUndefined()
+  expect(await buttons(ui)).toHaveLength(2)
 })

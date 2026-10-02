@@ -10,7 +10,8 @@ const PANE = 'images'
 const MAIN = ''
 const LIST_ROWS = 8
 const FRAGMENT_ROWS = 3
-const CHROME_ROWS = 2
+const CHROME_ROWS = 3
+const TRANSCRIPT_COLUMNS = 24
 const MIN_PICTURE_ROWS = 4
 const NO_CONVERTER = 2
 const NOT_CONVERTED = 3
@@ -31,11 +32,14 @@ const MATERIALIZE = [
   'printf "%s\\n" "$out"',
 ].join('\n')
 
+const VIEW = 'case "$(uname)" in Darwin) open "$1" ;; *) xdg-open "$1" ;; esac'
+
 const items = atom({ plugin: 'image-preview', key: 'items' } as const, [])
 const selected = atom({ plugin: 'image-preview', key: 'selected' } as const, '')
 const files = atom({ plugin: 'image-preview', key: 'files' } as const, {})
 const seen = atom({ plugin: 'image-preview', key: 'seen' } as const, {})
 const agents = atom({ plugin: 'image-preview', key: 'agents' } as const, [])
+const zoomed = atom({ plugin: 'image-preview', key: 'zoomed' } as const, false)
 
 type Dated = Found & { at?: number; agentId?: string; version?: number }
 type Source = { id: string } & ({ kind: 'block'; mediaType: string; data: string } | { kind: 'path'; path: string })
@@ -46,6 +50,7 @@ const noted = new Set<string>()
 const stale = new Set<string>()
 let queue: Promise<unknown> = Promise.resolve()
 let isRefreshQueued = false
+let screenColumns = 0
 let ended = 0
 
 function inOrder<T>(task: () => Promise<T>): Promise<T> {
@@ -246,6 +251,21 @@ async function notice($: EngineInterface, role: string | undefined, blocks: read
   return isNews
 }
 
+async function zoom($: EngineInterface, isZoomed: boolean) {
+  await update($, zoomed, () => isZoomed)
+  const wide = isZoomed && screenColumns > TRANSCRIPT_COLUMNS ? { columns: screenColumns - TRANSCRIPT_COLUMNS } : {}
+  await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true, ...wide })
+}
+
+async function toggleZoom($: EngineInterface) {
+  await zoom($, !(await read($, zoomed)))
+}
+
+async function view($: EngineInterface, file: string) {
+  const ran = await $.process.run(['sh', '-c', VIEW, 'sh', file]).catch(() => undefined)
+  if (ran?.exitCode !== 0) $.ui.toast('Could not open the image in a viewer.')
+}
+
 async function forget($: EngineInterface) {
   pending.clear()
   noted.clear()
@@ -257,6 +277,7 @@ async function forget($: EngineInterface) {
     update($, files, () => ({})),
     update($, seen, () => ({})),
     update($, agents, () => []),
+    update($, zoomed, () => false),
   ])
 }
 
@@ -269,7 +290,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'image-preview' }, async $ => {
     const count = await inOrder(() => refresh($))
-    await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true })
+    await zoom($, false)
 
     return {
       text: count === 0 ? 'Images pane opened. No images in this session yet.' : `Images pane opened with ${count} image${count === 1 ? '' : 's'}.`,
@@ -288,6 +309,19 @@ export const register: Register = on => {
     return kept
   })
 
+  on('ui.message', async ($, e, next) => {
+    if (e.requestId === PANE && e.element === 'zone') await toggleZoom($)
+
+    return next(e)
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person' || !(await read($, zoomed))) return next(e)
+    await zoom($, false)
+
+    return { value: undefined }
+  })
+
   on('session.compact', async ($, e, next) => {
     const listed = await inOrder(() => relist($, [e.agentId ?? MAIN])).catch(() => undefined)
     if (listed) void inOrder(() => keep($, listed.found)).catch(() => undefined)
@@ -304,7 +338,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
-    const [kept, current, ready] = await Promise.all([read($, items), read($, selected), read($, files)])
+    const [kept, current, ready, isZoomed] = await Promise.all([read($, items), read($, selected), read($, files), read($, zoomed)])
+    if (e.viewport) screenColumns = e.viewport.columns + (e.props.placement === 'dock' ? e.props.bodyColumns : 0)
     const list = [...kept].reverse()
     const at = Math.max(0, list.findIndex(item => item.id === current))
     const shown = list[at]
@@ -313,18 +348,36 @@ export const register: Register = on => {
     const first = Math.max(0, Math.min(at - Math.floor(LIST_ROWS / 2), list.length - LIST_ROWS))
     const file = ready[shown.id]
     const columns = e.props.bodyColumns
+    const isEnlarged = isZoomed && e.surface === 'terminal' && file !== undefined && !('error' in file)
     const listRows = Math.min(list.length, LIST_ROWS) + (list.length > LIST_ROWS ? 1 : 0)
-    const room = Math.max(MIN_PICTURE_ROWS, e.props.scroll.bodyRows - listRows - FRAGMENT_ROWS - CHROME_ROWS)
+    const taken = isEnlarged ? CHROME_ROWS : listRows + FRAGMENT_ROWS + CHROME_ROWS
+    const room = Math.max(MIN_PICTURE_ROWS, e.props.scroll.bodyRows - taken)
 
     const picture = () => {
       if (!file) return <Text dimColor>Loading…</Text>
       if ('error' in file) return <Text dimColor>{file.error}</Text>
       if (e.surface !== 'terminal') return <Markdown key="preview" text={`[Open ${shown.label}](file://${encodeURI(file.file)})`} />
-      const { Image } = $.ui.resolve(e)
+      const { Image, Client } = $.ui.resolve(e)
       const source = { file: file.file, format: 'png' as const }
       const drawn = file.version === undefined ? source : { ...source, generation: Math.floor(file.version) }
-      return <Image key="preview" source={drawn} {...fit(file, columns, room)} alt={shown.label} />
+      const size = fit(file, columns, room)
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="column">
+            <Image key="preview" source={drawn} {...size} alt={shown.label} />
+            <Box position="absolute" top={0} left={0}>
+              <Client key="zone" module="./zone.tsx" props={size} width={size.columns} height={size.rows} />
+            </Box>
+          </Box>
+          <Box flexDirection="row" gap={3}>
+            <Button key="enlarge" plain hotkey="e" label={isEnlarged ? 'Back to list' : 'Enlarge'} onPress={() => void toggleZoom($)} />
+            <Button key="view" plain hotkey="o" label="Open in viewer" onPress={() => void view($, file.file)} />
+          </Box>
+        </Box>
+      )
     }
+
+    if (isEnlarged) return picture()
 
     return (
       <Box flexDirection="column">

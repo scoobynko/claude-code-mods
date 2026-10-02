@@ -1,6 +1,6 @@
 {
   "name": "image-preview",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "/image-preview opens a pane listing every image of the session, pasted or returned by a tool, and shows the one you pick.",
   "author": {
     "name": "scoobynko",
