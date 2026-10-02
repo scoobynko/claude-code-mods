@@ -1,6 +1,6 @@
 # image-preview
 
-`/image-preview` opens a pane beside the conversation with the images of the session: the ones you pasted, the ones tools returned (screenshots, `Read` of an image, MCP results) and image files that shell commands or MCP tools named. Pick one to see it large, with a few lines of the message it came with.
+`/image-preview` opens a pane beside the conversation with the images of the session: the ones you pasted, the ones tools returned (screenshots, `Read` of an image, MCP results), in the main conversation and in subagents, and image files written during the session. Pick one to see it large, with a few lines of the message it came with.
 
 - Newest first. `1`–`9`, or the arrows and Enter, pick an image; Esc closes the pane.
 - New images show up while the pane is open.
@@ -18,7 +18,9 @@
 
 The list is read from the conversation itself, so nothing is copied until you look. The image you pick is written as a PNG to a temp folder for the session, where the terminal reads it, and the folder is removed when the session ends.
 
-Images inside subagent conversations are not listed. After a compaction, images from before it stay in the list only if the pane had already listed them, and can be shown only if you had already looked at them.
+Image files on disk are found by name: a path that a shell command or an MCP tool was given, one a command printed, or one Claude mentioned, kept when the file exists and was written since the session began. Quoted or escaped paths with spaces work, and so does a relative path after a `cd`. A file that nothing names (a script that picks its own filename and prints nothing) is not found until Claude reads or mentions it.
+
+Before a compaction the images are saved to the temp folder, so they stay in the list afterwards. SVG files are not shown.
 
 ## Test
 

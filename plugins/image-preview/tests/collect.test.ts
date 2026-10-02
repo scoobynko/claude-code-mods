@@ -120,3 +120,57 @@ test('lists one file once however its path is spelled', () => {
 
   expect(found.map(one => (one.kind === 'path' ? one.path : ''))).toEqual(['shot.png'])
 })
+
+test('reads quoted and escaped paths with spaces, whole first and then the words inside', () => {
+  expect(imagePaths(`cp My\\ Shot.png "/tmp/My Shots/Screen Shot 1.png" 'out dir/b.jpg'`)).toEqual([
+    'My Shot.png',
+    '/tmp/My Shots/Screen Shot 1.png',
+    '1.png',
+    'out dir/b.jpg',
+    'dir/b.jpg',
+  ])
+})
+
+test('reads a path inside quoted prose', () => {
+  expect(imagePaths('echo "see docs/a.png"')).toContain('docs/a.png')
+})
+
+test('reads paths with letters beyond ASCII', () => {
+  expect(imagePaths('open obrázek.png')).toEqual(['obrázek.png'])
+})
+
+test('takes a whole MCP argument as a path, spaces and all', () => {
+  expect(collect(call('mcp__browser__screenshot', { path: '/tmp/My Shots/page.png' }))[0]).toMatchObject({
+    kind: 'path',
+    path: '/tmp/My Shots/page.png',
+  })
+})
+
+test('finds a file a command only printed', () => {
+  const found = collect([
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'python plot.py' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'Saved chart to out/chart.png' }] }] },
+  ])
+
+  expect(found).toMatchObject([{ kind: 'path', path: 'out/chart.png', label: 'Bash chart.png', from: 'call' }])
+})
+
+test('finds a file Claude only mentioned, without displacing the call that named it', () => {
+  const mention = { role: 'assistant', content: [{ type: 'text', text: 'I saved the diagram to `/tmp/x/diagram.png`.' }] }
+
+  expect(collect([mention])).toMatchObject([
+    { kind: 'path', path: '/tmp/x/diagram.png', label: 'file diagram.png', from: 'text', fragment: 'I saved the diagram to `/tmp/x/diagram.png`.' },
+  ])
+  expect(collect([...call('Bash', { command: 'dot -o /tmp/x/diagram.png g.dot' }), mention])).toMatchObject([
+    { path: '/tmp/x/diagram.png', label: 'Bash diagram.png', from: 'call' },
+  ])
+})
+
+test('remembers the folders commands moved into', () => {
+  const found = collect([
+    ...call('Bash', { command: 'cd "build dir" && make' }, 't1'),
+    ...call('Bash', { command: 'cd ../out; ./render.sh --out=fig.png' }, 't2'),
+  ])
+
+  expect(found).toMatchObject([{ kind: 'path', path: 'fig.png', bases: ['../out', 'build dir'] }])
+})

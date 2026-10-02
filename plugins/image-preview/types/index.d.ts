@@ -3,6 +3,8 @@ export type ImageItem = {
   label: string
   fragment: string
   at?: number
+  mtime?: number
+  agentId?: string
 }
 
 export type ImageFile = { file: string; width: number; height: number; stamp?: number } | { error: string }
@@ -14,6 +16,7 @@ declare module 'claude-code' {
       selected: string
       files: Record<string, ImageFile>
       seen: Record<string, number>
+      agents: string[]
     }
   }
 }

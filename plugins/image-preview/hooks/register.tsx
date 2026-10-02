@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ImageFile, ImageItem } from '../types'
-import { base64Image, collect, imageId, namedFiles } from './collect'
+import { base64Image, collect, imageId, imagePaths, namedFiles, pathId, proseOf, resultText } from './collect'
 import type { Block, Found, Message } from './collect'
 import { fit, pngSize } from './picture'
 
@@ -28,9 +28,14 @@ const items = atom({ plugin: 'image-preview', key: 'items' } as const, [])
 const selected = atom({ plugin: 'image-preview', key: 'selected' } as const, '')
 const files = atom({ plugin: 'image-preview', key: 'files' } as const, {})
 const seen = atom({ plugin: 'image-preview', key: 'seen' } as const, {})
+const agents = atom({ plugin: 'image-preview', key: 'agents' } as const, [])
 
-type Dated = Found & { at?: number }
+type Dated = Found & { at?: number; mtime?: number; agentId?: string }
+type Roots = { cwd: string; home: string; started: number }
 
+const MTIME_SLACK_MS = 2000
+const awaited = new Set<string>()
+const settled = new Set<string>()
 let queue: Promise<unknown> = Promise.resolve()
 
 function inOrder<T>(task: () => Promise<T>): Promise<T> {
@@ -46,29 +51,87 @@ const clockTime = (at: number) => {
   return `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
 }
 
-async function absolute($: EngineInterface, path: string) {
-  if (path.startsWith('/')) return path
-  if (path.startsWith('~/')) return `${(await $.env.get('HOME')) ?? '~'}${path.slice(1)}`
-  return `${await $.session.cwd()}/${path.replace(/^\.\//, '')}`
+const timeOf = (item: ImageItem) => item.at ?? Number.NEGATIVE_INFINITY
+
+const byTime = (a: ImageItem, b: ImageItem) => (timeOf(a) === timeOf(b) ? 0 : timeOf(a) < timeOf(b) ? -1 : 1)
+
+const isReady = (file: ImageFile | undefined, mtime: number | undefined) => file !== undefined && !('error' in file) && file.stamp === mtime
+
+const itemOf = ({ id, label, fragment, at, mtime, agentId }: Dated): ImageItem => ({
+  id,
+  label,
+  fragment,
+  ...(at === undefined ? {} : { at }),
+  ...(mtime === undefined ? {} : { mtime }),
+  ...(agentId === undefined ? {} : { agentId }),
+})
+
+const under = (base: string, path: string, roots: Roots) =>
+  path.startsWith('/') ? path : path.startsWith('~/') ? `${roots.home}${path.slice(1)}` : `${base}/${path.replace(/^\.\//, '')}`
+
+const spellings = (path: string, bases: readonly string[], roots: Roots) =>
+  path.startsWith('/') || path.startsWith('~/')
+    ? [under(roots.cwd, path, roots)]
+    : [roots.cwd, ...bases.map(base => under(roots.cwd, base, roots))].map(base => under(base, path, roots))
+
+async function rootsOf($: EngineInterface): Promise<Roots> {
+  const usage = await $.session.usage().catch(() => undefined)
+  return {
+    cwd: await $.session.cwd(),
+    home: (await $.env.get('HOME')) ?? '~',
+    started: (usage?.startedAt ?? 0) - MTIME_SLACK_MS,
+  }
 }
 
-async function scan($: EngineInterface): Promise<Dated[]> {
+async function placed($: EngineInterface, path: string, bases: readonly string[], roots: Roots) {
+  for (const spelling of spellings(path, bases, roots)) {
+    const stat = await $.fs.stat(spelling, { resolve: true }).catch(() => undefined)
+    if (stat?.kind === 'file' && stat.mtimeMs >= roots.started) return { path: stat.realPath ?? spelling, mtime: stat.mtimeMs }
+  }
+  return undefined
+}
+
+async function conversation($: EngineInterface, agentId: string | undefined): Promise<readonly Message[]> {
+  if (agentId === undefined) return $.session.messages({ as: 'api' })
+  const answer = await $.session.messages({ as: 'api', agentId })
+  return Array.isArray(answer) ? answer : []
+}
+
+async function scan($: EngineInterface, agentId?: string): Promise<Dated[]> {
   const stamps = await read($, seen)
-  const messages: readonly Message[] = await $.session.messages({ as: 'api' })
+  const roots = await rootsOf($)
+  const tag = agentId === undefined ? {} : { agentId }
   const dated: Dated[] = []
 
-  for (const one of collect(messages)) {
+  for (const one of collect(await conversation($, agentId))) {
     if (one.kind === 'block') {
       const at = stamps[one.id]
-      dated.push(at === undefined ? one : { ...one, at })
+      dated.push(at === undefined ? { ...one, ...tag } : { ...one, ...tag, at })
       continue
     }
-    const path = await absolute($, one.path)
-    const stat = await $.fs.stat(path).catch(() => undefined)
-    if (stat?.kind === 'file') dated.push({ ...one, path, at: stat.mtimeMs })
+    const file = await placed($, one.path, one.bases, roots)
+    if (!file) continue
+    const id = pathId(file.path)
+    const known = dated.findIndex(other => other.id === id)
+    if (known >= 0 && one.from === 'text') continue
+    if (known >= 0) dated.splice(known, 1)
+    dated.push({ ...one, ...tag, id, path: file.path, at: file.mtime, mtime: file.mtime })
   }
 
   return dated
+}
+
+async function scanAll($: EngineInterface) {
+  const found = await scan($)
+  const listed = await $.agent.list().catch(() => [])
+  const running = new Set(listed.filter(agent => agent.status === 'running').map(agent => agent.id))
+  for (const id of new Set([...(await read($, agents)), ...listed.map(agent => agent.id)])) {
+    if (!running.has(id) && settled.has(id)) continue
+    found.push(...(await scan($, id)))
+    if (running.has(id)) settled.delete(id)
+    else settled.add(id)
+  }
+  return found
 }
 
 async function tempDir($: EngineInterface, sessionId?: string) {
@@ -76,7 +139,7 @@ async function tempDir($: EngineInterface, sessionId?: string) {
   return `${base}/claude-image-preview-${sessionId ?? (await $.session.id())}`
 }
 
-async function materialize($: EngineInterface, one: Found, stamp: number | undefined): Promise<ImageFile> {
+async function materialize($: EngineInterface, one: Dated): Promise<ImageFile> {
   const dir = await tempDir($)
   const isPngFile = one.kind === 'path' && /\.png$/i.test(one.path)
   const out = isPngFile ? one.path : `${dir}/${one.id}.png`
@@ -89,30 +152,37 @@ async function materialize($: EngineInterface, one: Found, stamp: number | undef
     if (ran.exitCode === NO_CONVERTER) return { error: 'Showing this image needs sips or ImageMagick to convert it to PNG.' }
     const size = ran.exitCode === 0 ? pngSize(ran.stdout) : undefined
     if (!size) return { error: 'This image could not be prepared for preview.' }
-    return stamp === undefined ? { file: out, ...size } : { file: out, ...size, stamp }
+    return one.mtime === undefined ? { file: out, ...size } : { file: out, ...size, stamp: one.mtime }
   } catch {
     return { error: 'Image previews need a shell (macOS or Linux).' }
   }
 }
 
-async function show($: EngineInterface, id: string, found?: Dated[]) {
-  await update($, selected, () => id)
-  const stamp = (await read($, items)).find(item => item.id === id)?.at
-  const cached = (await read($, files))[id]
-  if (cached && !('error' in cached) && cached.stamp === stamp) return
-  const one = (found ?? (await scan($))).find(candidate => candidate.id === id)
-  const file: ImageFile = one ? await materialize($, one, stamp) : { error: 'This image is no longer in the conversation.' }
+async function prepare($: EngineInterface, id: string, one: Dated | undefined) {
+  const file: ImageFile = one ? await materialize($, one) : { error: 'This image is no longer in the conversation.' }
   await update($, files, all => ({ ...all, [id]: file }))
 }
 
-async function refresh($: EngineInterface, isOpening = false) {
-  const found = await scan($)
+async function show($: EngineInterface, id: string, found?: Dated[]) {
+  await update($, selected, () => id)
+  const item = (await read($, items)).find(other => other.id === id)
+  if (isReady((await read($, files))[id], item?.mtime)) return
+  const known = found?.find(candidate => candidate.id === id)
+  await prepare($, id, known ?? (await scan($, item?.agentId)).find(candidate => candidate.id === id))
+}
+
+async function relist($: EngineInterface) {
+  const found = await scanAll($)
   const before = await read($, items)
-  const fresh: ImageItem[] = found.map(({ id, label, fragment, at }) => (at === undefined ? { id, label, fragment } : { id, label, fragment, at }))
-  const freshIds = new Set(fresh.map(item => item.id))
-  const merged = [...before.filter(item => !freshIds.has(item.id)), ...fresh]
+  const fresh = new Map(found.map(one => [one.id, itemOf(one)]))
+  const merged = [...before.filter(item => !fresh.has(item.id)), ...fresh.values()].sort(byTime)
   await update($, items, () => merged)
 
+  return { found, before, merged }
+}
+
+async function refresh($: EngineInterface, isOpening = false) {
+  const { found, before, merged } = await relist($)
   const current = await read($, selected)
   const newest = merged.at(-1)
   const isFollowing = isOpening || current === '' || current === before.at(-1)?.id
@@ -122,29 +192,42 @@ async function refresh($: EngineInterface, isOpening = false) {
   return merged.length
 }
 
-const awaited = new Set<string>()
+async function keep($: EngineInterface, found: Dated[]) {
+  for (const one of found) {
+    if (one.kind === 'block' && !isReady((await read($, files))[one.id], undefined)) await prepare($, one.id, one)
+  }
+}
 
-async function notice($: EngineInterface, blocks: readonly Block[]) {
-  const inner = blocks.flatMap(block => (block.type === 'tool_result' && Array.isArray(block.content) ? (block.content as Block[]) : []))
+async function notice($: EngineInterface, blocks: readonly Block[], agentId: string | undefined) {
+  if (agentId !== undefined) {
+    settled.delete(agentId)
+    if (!(await read($, agents)).includes(agentId)) await update($, agents, all => [...all.filter(id => id !== agentId), agentId])
+  }
+  const results = blocks.filter(block => block.type === 'tool_result')
+  const inner = results.flatMap(block => (Array.isArray(block.content) ? (block.content as Block[]) : []))
   const arrived = [...blocks, ...inner].flatMap(block => base64Image(block) ?? [])
   for (const block of blocks) {
     if (block.type === 'tool_use' && typeof block.id === 'string' && namedFiles(String(block.name), block.input).length > 0) {
       awaited.add(block.id)
     }
   }
-  const finished = blocks.filter(block => block.type === 'tool_result' && awaited.delete(String(block.tool_use_id)))
-  if (arrived.length === 0) return finished.length > 0
+  const finished = results.filter(block => awaited.delete(String(block.tool_use_id)))
+  const mentioned = imagePaths([proseOf(blocks), ...results.map(resultText)])
+  if (arrived.length === 0) return finished.length > 0 || mentioned.length > 0
 
   const now = await $.clock.now()
-  await update($, seen, all => ({ ...Object.fromEntries(arrived.map(one => [imageId(one.data), now])), ...all }))
+  await update($, seen, all => ({ ...all, ...Object.fromEntries(arrived.map(one => [imageId(one.data), now])) }))
   return true
 }
 
 async function forget($: EngineInterface) {
+  awaited.clear()
+  settled.clear()
   await update($, items, () => [])
   await update($, selected, () => '')
   await update($, files, () => ({}))
   await update($, seen, () => ({}))
+  await update($, agents, () => [])
 }
 
 async function refreshIfOpen($: EngineInterface) {
@@ -170,7 +253,7 @@ export const register: Register = on => {
 
   on('session.append', async ($, e, next) => {
     const kept = next(e)
-    const isNews = !e.agentId && (await notice($, e.message.content))
+    const isNews = await notice($, e.message.content, e.agentId)
     if (isNews) {
       void kept
         .catch(() => undefined)
@@ -179,6 +262,15 @@ export const register: Register = on => {
     }
 
     return kept
+  })
+
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const listed = await inOrder(() => relist($)).catch(() => undefined)
+      if (listed) void inOrder(() => keep($, listed.found)).catch(() => undefined)
+    }
+
+    return next(e)
   })
 
   on('session.end', async ($, e, next) => {

@@ -31,11 +31,17 @@ const header = (width: number, height: number) => {
 
 type Run = { argv: readonly string[]; init?: { stdin?: string } }
 
-const answerSession = (on: On, messages: unknown[], onOpen = () => {}) => {
+type Setup = { onOpen?: () => void; startedAt?: number; agents?: Record<string, unknown[]>; listed?: boolean }
+
+const answerSession = (on: On, messages: unknown[], { onOpen = () => {}, startedAt = 0, agents = {}, listed = true }: Setup = {}) => {
   const conversation = [...messages]
   const opens: unknown[] = []
   mock.env(on, { TMPDIR: '/tmp/t/', HOME: '/home/me' })
-  on('session.messages', () => ({ value: conversation }) as never)
+  on('session.messages', (_, e) => ({ value: e.agentId === undefined ? conversation : (agents[e.agentId] ?? { deny: 'gone' }) }) as never)
+  on('session.usage', () => ({ value: { startedAt, context: { tokens: 0, window: 200_000 }, rateLimits: [] } }))
+  on('agent.list', () => ({
+    value: listed ? Object.keys(agents).map(id => ({ id, description: 'look around', type: 'Explore', status: 'completed' })) : [],
+  }))
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('ui.panes', () => ({
@@ -82,8 +88,10 @@ test('opens the Images pane and lists pasted and tool images, newest first', asy
 
 test('has the newest image ready before the pane opens', async ($, on) => {
   let preparedAtOpen = -1
-  answerSession(on, CONVERSATION, () => {
-    preparedAtOpen = runs.length
+  answerSession(on, CONVERSATION, {
+    onOpen: () => {
+      preparedAtOpen = runs.length
+    },
   })
   const runs = answerProcess(on)
 
@@ -238,13 +246,14 @@ test('links to the file where the surface draws no images', async ($, on) => {
 
 const LATE = { role: 'user', content: [{ type: 'text', text: 'And this one?' }, image('image/png', 'L'.repeat(300))] } as const
 
-const appendRow = ($: Engine, message: { role: 'user' | 'assistant'; content: readonly unknown[] }) =>
+const appendRow = ($: Engine, message: { role: 'user' | 'assistant'; content: readonly unknown[] }, agentId?: string) =>
   $.session
     .append({
       door: message.role === 'user' ? 'prompt' : 'response',
       origin: { kind: 'composer' },
       uuid: crypto.randomUUID(),
       message: { type: message.role, ...message },
+      ...(agentId === undefined ? {} : { agentId }),
     } as never)
     .catch(() => undefined)
 
@@ -446,4 +455,129 @@ test('selects the newest image again when reopened', async ($, on) => {
   await open($)
 
   expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('Read mockup.jpg')
+})
+
+const WROTE = [
+  { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'cd build && ./render.sh --out=fig.png' } }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'ok' }] },
+  { role: 'assistant', content: [{ type: 'text', text: 'The figure is at /work/build/fig.png now.' }] },
+]
+
+const answerFiles = (on: On, known: Record<string, number>) =>
+  on('fs.stat', (_, e) => {
+    const mtimeMs = known[e.path]
+    if (mtimeMs === undefined) throw new Error('ENOENT')
+    return { value: { kind: 'file', size: 10, mtimeMs, isLink: false } }
+  })
+
+test('finds a file written after a cd, once, however it is spelled', async ($, on) => {
+  answerSession(on, WROTE)
+  answerProcess(on)
+  answerFiles(on, { '/work/build/fig.png': 5000 })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect(await labels(ui)).toHaveLength(1)
+  expect((await labels(ui))[0]).toMatch(/^Bash fig\.png/)
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.source).toMatchObject({ file: '/work/build/fig.png' })
+})
+
+test('leaves out an image file older than the session', async ($, on) => {
+  answerSession(on, WROTE, { startedAt: 60_000 })
+  answerProcess(on)
+  answerFiles(on, { '/work/build/fig.png': 5000 })
+
+  expect((await open($)).text).toBe('Images pane opened. No images in this session yet.')
+})
+
+test('lists the images of a subagent conversation and shows one', async ($, on) => {
+  const explored = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a1', name: 'Read', input: { file_path: '/work/diagram.png' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a1', content: [image('image/png', 'D'.repeat(300))] }] },
+  ]
+  answerSession(on, CONVERSATION, { agents: { 'agent-1': explored } })
+  const runs = answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const row = (await buttons(ui)).find(button => String(button.props.label).startsWith('Read diagram.png'))
+
+  expect(await labels(ui)).toHaveLength(3)
+  await ui.press({ key: String(row?.key) })
+
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('Read diagram.png')
+  expect(runs.at(-1)?.init?.stdin).toBe('D'.repeat(300))
+})
+
+test('keeps the images viewable across a compaction', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  const clock = mock.clock(on)
+  const summary = [{ role: 'user' as const, text: 'Summary of the work so far.', toolUses: [] }]
+  on('session.compact', () => ({ messages: summary }))
+
+  await $.session.compact({ trigger: 'manual', messages: summary })
+  await clock.settle()
+  expect(runs).toHaveLength(2)
+
+  conversation.length = 0
+  expect((await open($)).text).toBe('Images pane opened with 2 images.')
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  await ui.press({ key: String((await buttons(ui))[1]?.key) })
+
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('pasted')
+  expect(runs).toHaveLength(2)
+})
+
+test('orders images by when they appeared', async ($, on) => {
+  const { conversation } = answerSession(on, [])
+  answerProcess(on)
+  const clock = mock.clock(on, { now: 10_000 })
+  answerFiles(on, { '/work/shot.png': 20_000 })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const wrote = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'screencapture -x shot.png' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'ok' }] },
+  ] as const
+
+  conversation.push(...wrote, LATE)
+  await appendRow($, LATE)
+  await clock.settle()
+
+  expect((await labels(ui)).map(label => label.replace(/ {2}.*/, ''))).toEqual(['Bash shot.png', 'pasted'])
+})
+
+test('lists the images of a finished subagent the engine no longer lists', async ($, on) => {
+  const explored = [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a1', name: 'Read', input: { file_path: '/work/diagram.png' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a1', content: [image('image/png', 'D'.repeat(300))] }] },
+  ] as const
+  answerSession(on, CONVERSATION, { agents: { 'agent-1': [...explored] }, listed: false })
+  answerProcess(on)
+  const clock = mock.clock(on)
+
+  await appendRow($, explored[1], 'agent-1')
+  await clock.settle()
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect((await labels(ui))[0]).toMatch(/^Read diagram\.png {2}\d\d:\d\d$/)
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('Read diagram.png')
+})
+
+test('lists a file once when two spellings lead to it', async ($, on) => {
+  answerSession(on, [
+    ...WROTE.slice(0, 2),
+    { role: 'assistant', content: [{ type: 'text', text: 'Also reachable as /work/out/../build/fig.png for the docs.' }] },
+  ])
+  answerProcess(on)
+  on('fs.stat', (_, e) => {
+    if (!['/work/build/fig.png', '/work/out/../build/fig.png'].includes(e.path)) throw new Error('ENOENT')
+    return { value: { kind: 'file', size: 10, mtimeMs: 5000, isLink: false, realPath: '/work/build/fig.png' } }
+  })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect(await labels(ui)).toHaveLength(1)
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.source).toMatchObject({ file: '/work/build/fig.png' })
 })
