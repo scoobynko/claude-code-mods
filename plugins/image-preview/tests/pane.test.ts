@@ -218,3 +218,130 @@ test('links to the file where the surface draws no images', async ($, on) => {
   expect(String(link?.props.text)).toMatch(new RegExp(`^\\[Open Read mockup\\.jpg\\]\\(file://${DIR}/[a-z0-9-]+\\.png\\)$`))
   expect(await labels(ui)).toEqual(['Read mockup.jpg', 'pasted'])
 })
+
+const LATE = { role: 'user', content: [{ type: 'text', text: 'And this one?' }, image('image/png', 'L'.repeat(300))] } as const
+
+const appendRow = ($: Engine, message: { role: 'user' | 'assistant'; content: readonly unknown[] }) =>
+  $.session
+    .append({
+      door: message.role === 'user' ? 'prompt' : 'response',
+      origin: { kind: 'composer' },
+      uuid: crypto.randomUUID(),
+      message: { type: message.role, ...message },
+    } as never)
+    .catch(() => undefined)
+
+test('adds an image that arrives while the pane is open, with its time, and follows it', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  const clock = mock.clock(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  conversation.push(LATE)
+  await appendRow($, LATE)
+  await clock.settle()
+
+  const shown = await labels(ui)
+  expect(shown).toHaveLength(3)
+  expect(shown[0]).toMatch(/^pasted {2}\d\d:\d\d$/)
+  expect(await ui.find({ type: 'Text', text: 'And this one?' })).toBeDefined()
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('pasted')
+})
+
+test('keeps the picked image when a new one arrives', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  const clock = mock.clock(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  await ui.press({ key: String((await buttons(ui))[1]?.key) })
+
+  conversation.push(LATE)
+  await appendRow($, LATE)
+  await clock.settle()
+
+  expect(await labels(ui)).toHaveLength(3)
+  expect(await ui.find({ type: 'Text', text: 'Why is this button off-centre? [Image #1]' })).toBeDefined()
+})
+
+test('does not read the conversation while the pane is closed', async ($, on) => {
+  let reads = 0
+  const clock = mock.clock(on)
+  on('ui.panes', () => ({ value: [] }))
+  on('session.messages', () => {
+    reads++
+    return { value: [] }
+  })
+
+  await appendRow($, LATE)
+  await clock.settle()
+
+  expect(reads).toBe(0)
+})
+
+test('shows a command-written image file once its call has finished', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 0, isLink: false } }))
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const call = { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'screencapture -x shot.png' } }] } as const
+  const result = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'ok' }] } as const
+
+  conversation.push(call)
+  await appendRow($, call)
+  await clock.settle()
+  expect(await labels(ui)).toHaveLength(2)
+
+  conversation.push(result)
+  await appendRow($, result)
+  await clock.settle()
+  expect((await labels(ui))[0]).toMatch(/^Bash shot\.png/)
+})
+
+test('lists an image file a command wrote, drawn from where it is', async ($, on) => {
+  answerSession(on, [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'screencapture -x shot.png' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'ok' }] },
+  ])
+  const runs = answerProcess(on)
+  on('fs.stat', (_, e) => {
+    if (e.path !== '/work/shot.png') throw new Error('ENOENT')
+    return { value: { kind: 'file', size: 10, mtimeMs: Date.UTC(2026, 0, 1, 12, 0), isLink: false } }
+  })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect((await labels(ui))[0]).toMatch(/^Bash shot\.png {2}\d\d:\d\d$/)
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.source).toEqual({ file: '/work/shot.png', format: 'png' })
+  expect(runs[0]?.argv.slice(4)).toEqual([DIR, '/work/shot.png', '/work/shot.png', 'keep'])
+  expect(runs[0]?.init?.stdin).toBeUndefined()
+})
+
+test('leaves out a named image file that does not exist', async ($, on) => {
+  answerSession(on, [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'rm old.png' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'ok' }] },
+  ])
+  answerProcess(on)
+  on('fs.stat', () => {
+    throw new Error('ENOENT')
+  })
+
+  expect((await open($)).text).toBe('Images pane opened. No images in this session yet.')
+})
+
+test('removes its temp files and forgets the images when the session ends', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } } as never)
+
+  expect(runs.at(-1)?.argv).toEqual(['rm', '-rf', DIR])
+  expect(await buttons(ui)).toHaveLength(0)
+})

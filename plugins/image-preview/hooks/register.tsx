@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ImageFile, ImageItem } from '../types'
-import { collect } from './collect'
-import type { Found, Message } from './collect'
+import { base64Image, collect, imageId, imagePaths } from './collect'
+import type { Block, Found, Message } from './collect'
 import { fit, pngSize } from './picture'
 
 const PANE = 'images'
@@ -110,6 +110,27 @@ async function refresh($: EngineInterface) {
   return merged.length
 }
 
+const awaited = new Set<string>()
+
+async function notice($: EngineInterface, blocks: readonly Block[]) {
+  const inner = blocks.flatMap(block => (block.type === 'tool_result' && Array.isArray(block.content) ? (block.content as Block[]) : []))
+  const arrived = [...blocks, ...inner].flatMap(block => base64Image(block) ?? [])
+  for (const block of blocks) {
+    if (block.type === 'tool_use' && typeof block.id === 'string' && imagePaths(block.input).length > 0) awaited.add(block.id)
+  }
+  const finished = blocks.filter(block => block.type === 'tool_result' && awaited.delete(String(block.tool_use_id)))
+  if (arrived.length === 0) return finished.length > 0
+
+  const now = await $.clock.now()
+  await update($, seen, all => ({ ...Object.fromEntries(arrived.map(one => [imageId(one.data), now])), ...all }))
+  return true
+}
+
+async function refreshIfOpen($: EngineInterface) {
+  const panes = await $.ui.panes()
+  if (panes.some(pane => pane.id === PANE)) await refresh($)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'image-preview', description: 'Show the images of this session in a pane' })
@@ -124,6 +145,29 @@ export const register: Register = on => {
     return {
       text: count === 0 ? 'Images pane opened. No images in this session yet.' : `Images pane opened with ${count} image${count === 1 ? '' : 's'}.`,
     }
+  })
+
+  on('session.append', async ($, e, next) => {
+    const kept = next(e)
+    const isNews = !e.agentId && (await notice($, e.message.content))
+    if (isNews) {
+      void kept
+        .catch(() => undefined)
+        .then(() => refreshIfOpen($))
+        .catch(() => undefined)
+    }
+
+    return kept
+  })
+
+  on('session.end', async ($, e, next) => {
+    await $.process.run(['rm', '-rf', await tempDir($, e.sessionId)]).catch(() => undefined)
+    await update($, items, () => [])
+    await update($, selected, () => '')
+    await update($, files, () => ({}))
+    await update($, seen, () => ({}))
+
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
