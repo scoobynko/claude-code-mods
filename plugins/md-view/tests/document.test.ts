@@ -56,3 +56,33 @@ test('closes an unclosed fence and survives an empty file', async () => {
   expect(layout('```ts\nconst x = 1', 80)).toEqual(['```ts\nconst x = 1\n```'])
   expect(layout('', 80)).toEqual([])
 })
+
+test('drops the control characters a Markdown element refuses', async () => {
+  expect(load('a\u0085b\u0092c\u009fd').text).toBe('abcd')
+})
+
+test('keeps prose with a pipe above a rule', async () => {
+  const text = 'Run `foo | bar` to pipe the output of foo into bar and then into baz again\n---\nnext'
+  expect(layout(text, 40)).toEqual([text])
+})
+
+test('keeps a wide table that has no rows', async () => {
+  const text = '| a very long header cell | another very long header cell |\n| --- | --- |'
+  expect(layout(text, 20)).toEqual([text])
+})
+
+test('takes only key lines between rules for front matter', async () => {
+  const text = '---\n\nSome text\n\n---\nmore'
+  expect(layout(text, 80)).toEqual([text])
+  expect(layout('---\nname: x\nnote: "```"\n---\n# Title', 80)).toEqual(['````yaml\nname: x\nnote: "```"\n````\n# Title'])
+})
+
+test('leaves a table in a fence nested in a list alone', async () => {
+  const text = '- item\n    ```\n    | a very long header that is wide | another very long header |\n    |---|---|\n    | 1 | 2 |\n    ```'
+  expect(layout(text, 20)).toEqual([text])
+})
+
+test('never hands the Markdown element more than it takes', async () => {
+  const parts = layout(`${'`'.repeat(2000)}\n${'x\n'.repeat(6000)}`, 80)
+  expect(Math.max(...parts.map(part => part.length))).toBeLessThanOrEqual(10_000)
+})

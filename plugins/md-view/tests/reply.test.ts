@@ -98,10 +98,14 @@ test("keeps the engine's drawing for a reply the Markdown element cannot hold", 
     const long = await $.ui.mount({ ...reply(`See README.md. ${'word '.repeat(2000)}`), surface })
     const odd = await $.ui.mount({ ...reply('See README.md.\u001b[31m'), surface, requestId: 'm2' })
 
+    const stray = await $.ui.mount({ ...reply('See README.md.\u0085'), surface, requestId: 'm3' })
+
     expect(await long.drawn()).toEqual(ENGINE)
     expect(await odd.drawn()).toEqual(ENGINE)
+    expect(await stray.drawn()).toEqual(ENGINE)
     await long.unmount()
     await odd.unmount()
+    await stray.unmount()
   }
 })
 
@@ -137,4 +141,20 @@ test('uses the round bullet away from macOS', async ($, on) => {
   const ui = await $.ui.mount({ ...reply('See README.md.'), surface: 'terminal' })
 
   expect(await ui.find({ type: 'Text', text: '●' })).toBeDefined()
+})
+
+test('passes the model step, the tool result and the turn through untouched', async ($, on) => {
+  const session = host(on)
+  on('tool.call', () => ({ result: { marker: 1 } }))
+  on('turn.complete', () => ({ text: 'bye' }))
+  await start($)
+  session.step.answer = 'See README.md.'
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'test', messageCount: 1 })[Symbol.asyncIterator]()
+  const first = await stream.next()
+  const last = await stream.next()
+
+  expect(first).toEqual({ done: false, value: { kind: 'text', index: 0, text: 'See README.md.' } })
+  expect(last).toMatchObject({ done: true, value: { turnId: 't1', answer: 'See README.md.', stopReason: 'end_turn' } })
+  expect(await $.tool.call({ tool: 'Write', tool_use_id: 'w1', file_path: '/proj/README.md', content: 'x' })).toMatchObject({ result: { marker: 1 } })
+  expect(await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })).toMatchObject({ text: 'bye' })
 })

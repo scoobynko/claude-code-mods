@@ -2,12 +2,13 @@ import { fenceAfter } from './fences'
 
 export const MAX_CHARS = 60_000
 export const CHUNK_CHARS = 9_000
+export const MARKDOWN_CHARS = 10_000
 
 const LINE_CHARS = CHUNK_CHARS - 200
 const FRONT_MATTER_CHARS = 4_000
-const FRONT_MATTER = /^---\n([\s\S]*?)\n---(\n|$)/
+const FRONT_MATTER = /^---\n(?=[\w-]+:)([\s\S]*?)\n---(\n|$)/
 const SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/g
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
 
 export type Loaded = { text: string; totalChars: number }
 
@@ -21,7 +22,10 @@ export const load = (raw: string): Loaded => {
 const fenceFrontMatter = (text: string): string => {
   const match = FRONT_MATTER.exec(text)
   if (!match || match[0].length > FRONT_MATTER_CHARS) return text
-  return `\`\`\`yaml\n${match[1]}\n\`\`\`\n${text.slice(match[0].length)}`
+  const body = match[1] ?? ''
+  const longest = Math.max(0, ...Array.from(body.matchAll(/`+/g), run => run[0].length))
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return `${fence}yaml\n${body}\n${fence}\n${text.slice(match[0].length)}`
 }
 
 const cellsOf = (row: string): string[] =>
@@ -50,13 +54,14 @@ const narrowTables = (lines: string[], columns: number): string[] => {
     const wasOpen = fence
     fence = fenceAfter(fence, line)
     const rule = lines[i + 1] ?? ''
-    if (wasOpen || fence || !isRow(line) || !rule.includes('-') || !SEPARATOR.test(rule)) {
+    const header = cellsOf(line)
+    const isTable = isRow(line) && rule.includes('-') && SEPARATOR.test(rule) && cellsOf(rule).length === header.length
+    let end = i + 2
+    while (isTable && isRow(lines[end])) end++
+    if (wasOpen || fence || !isTable || end === i + 2) {
       out.push(line)
       continue
     }
-    let end = i + 2
-    while (isRow(lines[end])) end++
-    const header = cellsOf(line)
     const rows = lines.slice(i + 2, end).map(cellsOf)
     const width = header.reduce(
       (sum, cell, column) => sum + 3 + Math.max(shownLength(cell), ...rows.map(row => shownLength(row[column] ?? ''))),
@@ -98,5 +103,10 @@ const chunk = (lines: string[]): string[] => {
   return chunks
 }
 
+const slices = (part: string): string[] =>
+  Array.from({ length: Math.ceil(part.length / MARKDOWN_CHARS) }, (_, index) =>
+    part.slice(index * MARKDOWN_CHARS, (index + 1) * MARKDOWN_CHARS),
+  )
+
 export const layout = (text: string, columns: number): string[] =>
-  chunk(narrowTables(fenceFrontMatter(text).split('\n'), columns))
+  chunk(narrowTables(fenceFrontMatter(text).split('\n'), columns)).flatMap(slices)

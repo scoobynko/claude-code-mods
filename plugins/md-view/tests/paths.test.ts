@@ -51,3 +51,29 @@ test('leaves text without known files unchanged', async () => {
   const text = 'Nothing here but missing.md and `other.md`.'
   expect(linkify(text, KNOWN, CWD, HOME)).toEqual({ text, hrefs: [] })
 })
+
+test('finds and links paths with non-ASCII names', async () => {
+  expect(mentionsIn('Viz docs/přehled.md a 文档/说明.md.')).toEqual(['docs/přehled.md', '文档/说明.md'])
+  expect(linkify('Viz docs/přehled.md.', new Set(['/proj/docs/přehled.md']), CWD, HOME)).toEqual({
+    text: 'Viz [docs/přehled.md](file:///proj/docs/p%C5%99ehled.md).',
+    hrefs: ['file:///proj/docs/p%C5%99ehled.md'],
+  })
+  expect(pathOfHref('file:///proj/docs/p%C5%99ehled.md', CWD, HOME)).toBe('/proj/docs/přehled.md')
+})
+
+test('leaves fences nested in lists and quotes alone', async () => {
+  const text = '- a\n  - b\n    ```sh\n    cat README.md\n    ```\n> ```\n> cat README.md\n> ```\n1. ```sh\n   cat README.md\n   ```'
+  expect(linkify(text, KNOWN, CWD, HOME)).toEqual({ text, hrefs: [] })
+})
+
+test('does not take inline triple backticks for a fence', async () => {
+  expect(linkify('```code``` inline\nSee README.md', KNOWN, CWD, HOME).text).toBe(
+    '```code``` inline\nSee [README.md](file:///proj/README.md)',
+  )
+})
+
+test('leaves a url that ends in a known file name alone', async () => {
+  const text = 'Open https://example.com/view?file=README.md or file:///proj/README.md#top.'
+  expect(linkify(text, KNOWN, CWD, HOME)).toEqual({ text, hrefs: [] })
+  expect(mentionsIn(text)).toEqual([])
+})

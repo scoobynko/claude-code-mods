@@ -1,8 +1,8 @@
-const FENCE = /^ {0,3}(`{3,}|~{3,})/
+const FENCE = /^(?:[\s>]|[-*+]\s|\d+[.)]\s)*(`{3,}|~{3,})(.*)$/
 
 export const fenceAfter = (open: string, line: string): string => {
-  const mark = FENCE.exec(line)?.[1]
+  const [, mark, rest = ''] = FENCE.exec(line) ?? []
   if (!mark) return open
-  if (!open) return mark
-  return mark[0] === open[0] && mark.length >= open.length && line.trim() === mark ? '' : open
+  if (!open) return mark.startsWith('`') && rest.includes('`') ? '' : mark
+  return mark[0] === open[0] && mark.length >= open.length && rest.trim() === '' ? '' : open
 }

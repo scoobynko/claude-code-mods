@@ -1,17 +1,21 @@
 import { fenceAfter } from './fences'
 
-const TOKEN = String.raw`[\w.+~\/-][\w@.+~\/-]*\.md`
-const BEFORE = String.raw`(?<![\w@.+~\/:-])`
-const AFTER = String.raw`(?![\w@+~\/-]|\.\w)`
+const NAME = String.raw`\p{L}\p{M}\p{N}_`
+const TOKEN = String.raw`[${NAME}.+~\/-][${NAME}@.+~\/-]*\.md`
+const BEFORE = String.raw`(?<![${NAME}@.+~\/:-])`
+const AFTER = String.raw`(?![${NAME}@+~\/-]|\.[${NAME}])`
 const LINK = String.raw`(\[(?:[^\]\n\\]|\\.)*\]\(([^)\n]*)\))`
 const CODE = '(`+)([^`\\n]+)\\3'
-const MENTION = new RegExp(`${BEFORE}@?(${TOKEN})${AFTER}`, 'gi')
-const INLINE = new RegExp(`${LINK}|${CODE}|${BEFORE}(@?)(${TOKEN})${AFTER}`, 'gi')
-const WHOLE = new RegExp(`^${TOKEN}$`, 'i')
+const URL_TEXT = String.raw`[a-z][a-z0-9+.-]*:\/\/[^\s<>]+`
+const URLS = new RegExp(URL_TEXT, 'gi')
+const MENTION = new RegExp(`${BEFORE}@?(${TOKEN})${AFTER}`, 'giu')
+const INLINE = new RegExp(`${LINK}|${CODE}|(${URL_TEXT})|${BEFORE}(@?)(${TOKEN})${AFTER}`, 'giu')
+const WHOLE = new RegExp(`^${TOKEN}$`, 'iu')
 
 export const hasMention = (text: string): boolean => /\.md(?![\w-])/i.test(text)
 
-export const mentionsIn = (text: string): string[] => Array.from(text.matchAll(MENTION), match => match[1] ?? '')
+export const mentionsIn = (text: string): string[] =>
+  Array.from(text.replace(URLS, ' ').matchAll(MENTION), match => match[1] ?? '')
 
 export const resolvePath = (raw: string, cwd: string, home: string): string => {
   const joined = raw.startsWith('~/') ? `${home}/${raw.slice(2)}` : raw.startsWith('/') ? raw : `${cwd}/${raw}`
@@ -65,7 +69,7 @@ export const linkify = (text: string, known: ReadonlySet<string>, cwd: string, h
     return href
   }
   const inline = (line: string) =>
-    line.replace(INLINE, (whole, link, target, ticks, code, at, token) => {
+    line.replace(INLINE, (whole, link, target, ticks, code, url, at, token) => {
       if (link) {
         const path = pathOfHref(target, cwd, home)
         if (path && known.has(path)) hrefs.add(target)
@@ -75,6 +79,7 @@ export const linkify = (text: string, known: ReadonlySet<string>, cwd: string, h
         const href = WHOLE.test(code.trim()) ? hrefFor(code.trim()) : null
         return href ? `[${whole}](${href})` : whole
       }
+      if (url) return whole
       const href = hrefFor(token)
       return href ? `${at}[${token}](${href})` : whole
     })
