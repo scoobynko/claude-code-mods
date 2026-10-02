@@ -5,7 +5,7 @@ export type ImageItem = {
   at?: number
 }
 
-export type ImageFile = { file: string; width: number; height: number } | { error: string }
+export type ImageFile = { file: string; width: number; height: number; stamp?: number } | { error: string }
 
 declare module 'claude-code' {
   interface PluginState {

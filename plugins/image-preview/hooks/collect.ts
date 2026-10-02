@@ -7,7 +7,7 @@ export type Found = { id: string; label: string; fragment: string } & (
 
 type ToolUse = { name: string; input: unknown; said: string }
 
-const IMAGE_PATH = /(?:~|\.{1,2})?\/?[\w@%+=,.\-/]+\.(?:png|jpe?g|gif|webp)\b/gi
+const IMAGE_PATH = /(?<![\w@%+.\-/~])(?:~|\.{1,2})?\/?[\w@%+.\-/]{1,512}\.(?:png|jpe?g|gif|webp)\b/gi
 const MAX_FRAGMENT = 400
 const MAX_PATHS_PER_CALL = 8
 const SAMPLE = 64
@@ -63,6 +63,11 @@ export const base64Image = (block: Block) => {
 
 export const imagePaths = (value: unknown) => [...new Set(strings(value).flatMap(text => text.match(IMAGE_PATH) ?? []))]
 
+export const namedFiles = (tool: string, input: unknown) =>
+  tool === 'Bash' || tool.startsWith('mcp__')
+    ? [...new Set(imagePaths(input).map(path => path.replace(/^\.\//, '')))].slice(0, MAX_PATHS_PER_CALL)
+    : []
+
 export function collect(messages: readonly Message[]): Found[] {
   const uses = new Map<string, ToolUse>()
   const found = new Map<string, Found>()
@@ -93,7 +98,7 @@ export function collect(messages: readonly Message[]): Found[] {
       for (const one of images) add({ kind: 'block', id: imageId(one.data), label, fragment, ...one })
       if (images.length > 0) continue
 
-      for (const path of imagePaths(use.input).slice(0, MAX_PATHS_PER_CALL)) {
+      for (const path of namedFiles(use.name, use.input)) {
         add({ kind: 'path', id: `path-${hash(path)}`, path, label: `${toolLabel(use.name)} ${basename(path)}`, fragment })
       }
     }

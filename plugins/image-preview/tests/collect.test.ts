@@ -88,3 +88,35 @@ test('tells images apart by their bytes', () => {
 test('reads image paths out of any input', () => {
   expect(imagePaths({ command: 'convert a.jpeg ./b.webp', nested: ['~/c.GIF', 'notes.txt'] })).toEqual(['a.jpeg', './b.webp', '~/c.GIF'])
 })
+
+const call = (name: string, input: object, id = 't1') => [
+  { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+]
+
+test('reads a long unbroken input quickly', () => {
+  const started = Date.now()
+
+  expect(imagePaths({ content: 'A'.repeat(60_000) })).toEqual([])
+  expect(Date.now() - started).toBeLessThan(300)
+})
+
+test('finds a file named by a flag', () => {
+  expect(imagePaths('shot --output=out/a.png')).toEqual(['out/a.png'])
+})
+
+test('looks for image files only in commands and MCP tools', () => {
+  expect(collect(call('Edit', { file_path: 'README.md', old_string: 'see docs/a.png', new_string: 'see docs/b.png' }))).toEqual([])
+  expect(collect(call('mcp__browser__screenshot', { path: 'out/page.png' }))).toMatchObject([
+    { kind: 'path', path: 'out/page.png', label: 'screenshot (browser) page.png' },
+  ])
+})
+
+test('lists one file once however its path is spelled', () => {
+  const found = collect([
+    ...call('Bash', { command: 'screencapture -x shot.png' }, 't1'),
+    ...call('Bash', { command: 'open ./shot.png' }, 't2'),
+  ])
+
+  expect(found.map(one => (one.kind === 'path' ? one.path : ''))).toEqual(['shot.png'])
+})

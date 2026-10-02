@@ -153,6 +153,7 @@ test('shows the newest image at the pane width, converted to PNG, with the fragm
   expect(await ui.find({ type: 'Text', text: 'Let me look at the mockup.' })).toBeDefined()
   expect(runs).toHaveLength(1)
   expect(runs[0]?.argv.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(runs[0]?.argv[2]).toMatch(/^umask 077\n/)
   expect(runs[0]?.argv.slice(3)).toEqual(['sh', DIR, file.replace(/png$/, 'jpg'), file, 'decode'])
   expect(runs[0]?.init?.stdin).toBe(SHOT)
 })
@@ -331,7 +332,11 @@ test('lists an image file a command wrote, drawn from where it is', async ($, on
   const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
 
   expect((await labels(ui))[0]).toMatch(/^Bash shot\.png {2}\d\d:\d\d$/)
-  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.source).toEqual({ file: '/work/shot.png', format: 'png' })
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.source).toEqual({
+    file: '/work/shot.png',
+    format: 'png',
+    generation: Date.UTC(2026, 0, 1, 12, 0),
+  })
   expect(runs[0]?.argv.slice(4)).toEqual([DIR, '/work/shot.png', '/work/shot.png', 'keep'])
   expect(runs[0]?.init?.stdin).toBeUndefined()
 })
@@ -360,4 +365,85 @@ test('removes its temp files and forgets the images when the session ends', asyn
 
   expect(runs.at(-1)?.argv).toEqual(['rm', '-rf', DIR])
   expect(await buttons(ui)).toHaveLength(0)
+})
+
+test('shows a rewritten image file afresh', async ($, on) => {
+  let mtimeMs = 1000
+  const shoot = (id: string) =>
+    [
+      { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'screencapture -x shot.png' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+    ] as const
+  const { conversation } = answerSession(on, [...shoot('t1')])
+  const runs = answerProcess(on)
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs, isLink: false } }))
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const source = async () => (await ui.find({ type: 'Image', key: 'preview' }))?.props.source
+
+  expect(await source()).toEqual({ file: '/work/shot.png', format: 'png', generation: 1000 })
+
+  mtimeMs = 2000
+  const [again, result] = shoot('t2')
+  conversation.push(again, result)
+  await appendRow($, again)
+  await appendRow($, result)
+  await clock.settle()
+
+  expect(runs).toHaveLength(2)
+  expect(await source()).toEqual({ file: '/work/shot.png', format: 'png', generation: 2000 })
+  expect(await buttons(ui)).toHaveLength(1)
+})
+
+test('prepares an image once when two rows bring it together', async ($, on) => {
+  const { conversation } = answerSession(on, [])
+  const clock = mock.clock(on)
+  const runs: Run[] = []
+  on('process.run', async (_, e) => {
+    runs.push(e as Run)
+    await clock.sleep(100)
+    return { value: { exitCode: 0, stdout: header(800, 400), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  conversation.push(LATE)
+  void appendRow($, LATE)
+  void appendRow($, LATE)
+  await clock.advance(1000)
+
+  expect(runs).toHaveLength(1)
+  expect(await ui.find({ type: 'Image', key: 'preview' })).toBeDefined()
+})
+
+test('tries again on a pick after a failed preview', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  let exitCode = 1
+  const runs: Run[] = []
+  on('process.run', (_, e) => {
+    runs.push(e as Run)
+    return { value: { exitCode, stdout: exitCode === 0 ? header(800, 400) : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+
+  exitCode = 0
+  await ui.press({ key: String((await buttons(ui))[0]?.key) })
+
+  expect(await ui.find({ type: 'Image', key: 'preview' })).toBeDefined()
+})
+
+test('selects the newest image again when reopened', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  await ui.press({ key: String((await buttons(ui))[1]?.key) })
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('pasted')
+
+  await open($)
+
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('Read mockup.jpg')
 })

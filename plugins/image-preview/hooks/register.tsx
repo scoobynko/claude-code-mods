@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ImageFile, ImageItem } from '../types'
-import { base64Image, collect, imageId, imagePaths } from './collect'
+import { base64Image, collect, imageId, namedFiles } from './collect'
 import type { Block, Found, Message } from './collect'
 import { fit, pngSize } from './picture'
 
@@ -14,6 +14,7 @@ const MIN_PICTURE_ROWS = 4
 const NO_CONVERTER = 2
 const EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 const MATERIALIZE = [
+  'umask 077',
   'mkdir -p "$1" || exit 1',
   'if [ "$4" = decode ]; then base64 --decode > "$2" || exit 1; fi',
   'if [ "$2" != "$3" ]; then',
@@ -29,6 +30,14 @@ const files = atom({ plugin: 'image-preview', key: 'files' } as const, {})
 const seen = atom({ plugin: 'image-preview', key: 'seen' } as const, {})
 
 type Dated = Found & { at?: number }
+
+let queue: Promise<unknown> = Promise.resolve()
+
+function inOrder<T>(task: () => Promise<T>): Promise<T> {
+  const run = queue.then(task, task)
+  queue = run.catch(() => undefined)
+  return run
+}
 
 const twoDigits = (value: number) => String(value).padStart(2, '0')
 
@@ -67,7 +76,7 @@ async function tempDir($: EngineInterface, sessionId?: string) {
   return `${base}/claude-image-preview-${sessionId ?? (await $.session.id())}`
 }
 
-async function materialize($: EngineInterface, one: Found): Promise<ImageFile> {
+async function materialize($: EngineInterface, one: Found, stamp: number | undefined): Promise<ImageFile> {
   const dir = await tempDir($)
   const isPngFile = one.kind === 'path' && /\.png$/i.test(one.path)
   const out = isPngFile ? one.path : `${dir}/${one.id}.png`
@@ -79,7 +88,8 @@ async function materialize($: EngineInterface, one: Found): Promise<ImageFile> {
     const ran = await $.process.run(argv, one.kind === 'block' ? { stdin: one.data } : {})
     if (ran.exitCode === NO_CONVERTER) return { error: 'Showing this image needs sips or ImageMagick to convert it to PNG.' }
     const size = ran.exitCode === 0 ? pngSize(ran.stdout) : undefined
-    return size ? { file: out, ...size } : { error: 'This image could not be prepared for preview.' }
+    if (!size) return { error: 'This image could not be prepared for preview.' }
+    return stamp === undefined ? { file: out, ...size } : { file: out, ...size, stamp }
   } catch {
     return { error: 'Image previews need a shell (macOS or Linux).' }
   }
@@ -87,13 +97,15 @@ async function materialize($: EngineInterface, one: Found): Promise<ImageFile> {
 
 async function show($: EngineInterface, id: string, found?: Dated[]) {
   await update($, selected, () => id)
-  if ((await read($, files))[id]) return
+  const stamp = (await read($, items)).find(item => item.id === id)?.at
+  const cached = (await read($, files))[id]
+  if (cached && !('error' in cached) && cached.stamp === stamp) return
   const one = (found ?? (await scan($))).find(candidate => candidate.id === id)
-  const file: ImageFile = one ? await materialize($, one) : { error: 'This image is no longer in the conversation.' }
+  const file: ImageFile = one ? await materialize($, one, stamp) : { error: 'This image is no longer in the conversation.' }
   await update($, files, all => ({ ...all, [id]: file }))
 }
 
-async function refresh($: EngineInterface) {
+async function refresh($: EngineInterface, isOpening = false) {
   const found = await scan($)
   const before = await read($, items)
   const fresh: ImageItem[] = found.map(({ id, label, fragment, at }) => (at === undefined ? { id, label, fragment } : { id, label, fragment, at }))
@@ -103,7 +115,7 @@ async function refresh($: EngineInterface) {
 
   const current = await read($, selected)
   const newest = merged.at(-1)
-  const isFollowing = current === '' || current === before.at(-1)?.id
+  const isFollowing = isOpening || current === '' || current === before.at(-1)?.id
   if (newest && isFollowing) await show($, newest.id, found)
   else if (current) await show($, current, found)
 
@@ -116,7 +128,9 @@ async function notice($: EngineInterface, blocks: readonly Block[]) {
   const inner = blocks.flatMap(block => (block.type === 'tool_result' && Array.isArray(block.content) ? (block.content as Block[]) : []))
   const arrived = [...blocks, ...inner].flatMap(block => base64Image(block) ?? [])
   for (const block of blocks) {
-    if (block.type === 'tool_use' && typeof block.id === 'string' && imagePaths(block.input).length > 0) awaited.add(block.id)
+    if (block.type === 'tool_use' && typeof block.id === 'string' && namedFiles(String(block.name), block.input).length > 0) {
+      awaited.add(block.id)
+    }
   }
   const finished = blocks.filter(block => block.type === 'tool_result' && awaited.delete(String(block.tool_use_id)))
   if (arrived.length === 0) return finished.length > 0
@@ -124,6 +138,13 @@ async function notice($: EngineInterface, blocks: readonly Block[]) {
   const now = await $.clock.now()
   await update($, seen, all => ({ ...Object.fromEntries(arrived.map(one => [imageId(one.data), now])), ...all }))
   return true
+}
+
+async function forget($: EngineInterface) {
+  await update($, items, () => [])
+  await update($, selected, () => '')
+  await update($, files, () => ({}))
+  await update($, seen, () => ({}))
 }
 
 async function refreshIfOpen($: EngineInterface) {
@@ -139,7 +160,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'image-preview' }, async $ => {
-    const count = await refresh($)
+    const count = await inOrder(() => refresh($, true))
     await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true })
 
     return {
@@ -153,7 +174,7 @@ export const register: Register = on => {
     if (isNews) {
       void kept
         .catch(() => undefined)
-        .then(() => refreshIfOpen($))
+        .then(() => inOrder(() => refreshIfOpen($)))
         .catch(() => undefined)
     }
 
@@ -162,10 +183,7 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     await $.process.run(['rm', '-rf', await tempDir($, e.sessionId)]).catch(() => undefined)
-    await update($, items, () => [])
-    await update($, selected, () => '')
-    await update($, files, () => ({}))
-    await update($, seen, () => ({}))
+    await inOrder(() => forget($))
 
     return next(e)
   })
@@ -190,7 +208,9 @@ export const register: Register = on => {
       if ('error' in file) return <Text dimColor>{file.error}</Text>
       if (e.surface !== 'terminal') return <Markdown key="preview" text={`[Open ${label}](file://${encodeURI(file.file)})`} />
       const { Image } = $.ui.resolve(e)
-      return <Image key="preview" source={{ file: file.file, format: 'png' }} {...fit(file, columns, room)} alt={label} />
+      const source = { file: file.file, format: 'png' as const }
+      const drawn = file.stamp === undefined ? source : { ...source, generation: Math.floor(file.stamp) }
+      return <Image key="preview" source={drawn} {...fit(file, columns, room)} alt={label} />
     }
 
     return (
@@ -198,7 +218,7 @@ export const register: Register = on => {
         {list.slice(first, first + LIST_ROWS).map((item, i) => {
           const place = first + i + 1
           const label = item.at === undefined ? item.label : `${item.label}  ${clockTime(item.at)}`
-          const pick = () => void show($, item.id)
+          const pick = () => void inOrder(() => show($, item.id))
           return place <= 9 ? (
             <Button key={`pick-${item.id}`} plain hotkey={String(place)} label={label} dimColor={item.id !== current} onPress={pick} />
           ) : (
