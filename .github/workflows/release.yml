@@ -19,25 +19,48 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
-      - name: Work out the next version
-        id: next
+      - name: Bump the mods this merge changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          HAS_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
+        run: |
+          branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // empty')
+          git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed"
+          .github/scripts/plan-bumps.sh "${branch:-none}" "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/bumps"
+          echo "Merged branch: ${branch:-none}."
+          if [ ! -s "$RUNNER_TEMP/bumps" ]; then
+            echo "No version to bump."
+            exit 0
+          fi
+          if [ "$HAS_KEY" != true ]; then
+            echo "::error::These mods need a version bump, but the RELEASE_DEPLOY_KEY secret is not set: $(tr '\n' ' ' < "$RUNNER_TEMP/bumps")"
+            exit 1
+          fi
+          summary=""
+          while read -r mod version; do
+            .github/scripts/set-version.sh "plugins/$mod/.claude-plugin/plugin.json" "$version"
+            summary="$summary $mod $version,"
+          done < "$RUNNER_TEMP/bumps"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "Release${summary%,} [skip ci]"
+          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+
+      - name: Release every version that has no tag yet
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git tag --points-at "$GITHUB_SHA" | grep -q '^v[0-9]'; then
-            echo "This commit is already released."
+          target=$(git rev-parse HEAD)
+          .github/scripts/unreleased.sh > "$RUNNER_TEMP/unreleased"
+          if [ ! -s "$RUNNER_TEMP/unreleased" ]; then
+            echo "Every mod's version is already released."
             exit 0
           fi
-          branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // empty')
-          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
-          version=$(.github/scripts/next-version.sh "${branch:-none}" "${latest:-v0.0.0}")
-          echo "Merged branch: ${branch:-none}. Latest: ${latest:-none}. Next: ${version:-no release}."
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Publish the release
-        if: steps.next.outputs.version != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.next.outputs.version }}
-        run: gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
+          while read -r mod version; do
+            .github/scripts/release-notes.sh "$mod" "$version" > "$RUNNER_TEMP/notes"
+            gh release create "$mod-v$version" --target "$target" --title "$mod $version" --notes-file "$RUNNER_TEMP/notes"
+          done < "$RUNNER_TEMP/unreleased"

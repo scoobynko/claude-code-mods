@@ -22,16 +22,16 @@ Then install the mods you want:
 
 Ideas and bug reports are welcome as [issues](https://github.com/scoobynko/claude-code-mods/issues), fixes and new mods as pull requests.
 
-Name the branch `<type>/<short-description>`, in lowercase. The type decides the release that merging it makes:
+Name the branch `<type>/<short-description>`, in lowercase. Each mod has its own version and its own releases, and the type decides how the version of every mod the pull request touches moves:
 
-| Branch | Release |
+| Branch | Version of each mod it touches |
 | --- | --- |
-| `feat/…` | minor, `v1.2.0` → `v1.3.0` |
-| `fix/…`, `perf/…` | patch, `v1.2.0` → `v1.2.1` |
-| `breaking/…`, or a `!` after the type as in `feat!/…` | major, `v1.2.0` → `v2.0.0` |
-| `chore/…`, `docs/…`, `ci/…`, `test/…`, `refactor/…`, `style/…`, `build/…` | none |
+| `feat/…` | minor, `1.2.0` → `1.3.0` |
+| `fix/…`, `perf/…` | patch, `1.2.0` → `1.2.1` |
+| `breaking/…`, or a `!` after the type as in `feat!/…` | major, `1.2.0` → `2.0.0` |
+| `chore/…`, `docs/…`, `ci/…`, `test/…`, `refactor/…`, `style/…`, `build/…` | unchanged |
 
-Releases are made automatically when a pull request is merged into `main`, with notes listing what was merged.
+Don't change a mod's version yourself. When the pull request is merged into `main`, the version is bumped for you and a release named after the mod, such as `image-preview 0.3.0`, is published with the pull requests that changed it. A new mod is released at the version it arrives with.
 
 ## License
 
