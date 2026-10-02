@@ -139,8 +139,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'image-preview' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true })
     const count = await refresh($)
+    await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true })
 
     return {
       text: count === 0 ? 'Images pane opened. No images in this session yet.' : `Images pane opened with ${count} image${count === 1 ? '' : 's'}.`,

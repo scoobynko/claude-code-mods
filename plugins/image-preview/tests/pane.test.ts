@@ -31,7 +31,7 @@ const header = (width: number, height: number) => {
 
 type Run = { argv: readonly string[]; init?: { stdin?: string } }
 
-const answerSession = (on: On, messages: unknown[]) => {
+const answerSession = (on: On, messages: unknown[], onOpen = () => {}) => {
   const conversation = [...messages]
   const opens: unknown[] = []
   mock.env(on, { TMPDIR: '/tmp/t/', HOME: '/home/me' })
@@ -43,6 +43,7 @@ const answerSession = (on: On, messages: unknown[]) => {
   }))
   on('ui.open', (_, e) => {
     opens.push(e)
+    onOpen()
     return { value: { isPlaced: true } }
   })
   return { conversation, opens }
@@ -59,9 +60,12 @@ const answerProcess = (on: On, result: { width?: number; height?: number; exitCo
   return runs
 }
 
-const open = ($: Engine) => $.command.run({ command: 'image-preview', args: '' })
-const buttons = (ui: Mounted) => ui.findAll({ type: 'Button' })
-const labels = async (ui: Mounted) => (await buttons(ui)).map(button => String(button.props.label))
+const open = ($: Engine) =>
+  $.command.run({ command: 'image-preview', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } })
+type Drawn = Pick<Mounted, 'findAll'>
+
+const buttons = (ui: Drawn) => ui.findAll({ type: 'Button' })
+const labels = async (ui: Drawn) => (await buttons(ui)).map(button => String(button.props.label))
 
 test('opens the Images pane and lists pasted and tool images, newest first', async ($, on) => {
   const { opens } = answerSession(on, CONVERSATION)
@@ -74,6 +78,18 @@ test('opens the Images pane and lists pasted and tool images, newest first', asy
   expect(answer.text).toBe('Images pane opened with 2 images.')
   expect(await labels(ui)).toEqual(['Read mockup.jpg', 'pasted'])
   expect((await buttons(ui)).map(button => button.props.hotkey)).toEqual(['1', '2'])
+})
+
+test('has the newest image ready before the pane opens', async ($, on) => {
+  let preparedAtOpen = -1
+  answerSession(on, CONVERSATION, () => {
+    preparedAtOpen = runs.length
+  })
+  const runs = answerProcess(on)
+
+  await open($)
+
+  expect(preparedAtOpen).toBe(1)
 })
 
 test('says so when the session has no images', async ($, on) => {
