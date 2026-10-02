@@ -21,7 +21,7 @@ export const PANE = {
   props: { title: 'Markdown', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
 
-export const host = (on: On, messages: SessionMessage[] = SAID) => {
+export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/me') => {
   const disk: Record<string, string> = {
     '/proj/README.md': README,
     '/proj/docs/guide.md': GUIDE,
@@ -29,7 +29,7 @@ export const host = (on: On, messages: SessionMessage[] = SAID) => {
   }
   const opened: PaneOpenArgs[] = []
   const step: { answer: string; toolUses: TurnStepToolUse[] } = { answer: '', toolUses: [] }
-  mock.env(on, { HOME: '/Users/me' })
+  mock.env(on, { HOME: home })
   on('session.cwd', () => ({ value: '/proj' }))
   on('session.messages', () => ({ value: messages }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))

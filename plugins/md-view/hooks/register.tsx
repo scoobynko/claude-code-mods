@@ -3,13 +3,19 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { MdView } from '../types'
 import { layout, load } from './document'
-import { displayPath, mentionsIn, resolvePath } from './paths'
+import { displayPath, hasMention, linkify, mentionsIn, pathOfHref, resolvePath } from './paths'
 
 const PANE = 'md-view'
 const TITLE = 'Markdown'
 const MAX_FILES = 200
 const MIN_COLUMNS = 20
 const MAX_BYTES = 4 * 1024 * 1024
+const MAX_REPLY_CHARS = 10_000
+const MAX_LINKS = 256
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/
+const MAC_HOME = '/Users/'
+const MAC_BULLET = '⏺'
+const BULLET = '●'
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const EMPTY_VIEW: MdView = { mode: 'list', path: '', text: '', totalChars: 0, error: '' }
@@ -105,6 +111,15 @@ async function pick($: EngineInterface, path: string) {
   await scrollToStart($)
 }
 
+async function openHref($: EngineInterface, href: string) {
+  const { cwd, home } = await placeOf($)
+  const path = pathOfHref(href, cwd, home)
+  if (!path) return
+  await showFile($, path)
+  await openPane($, false)
+  await scrollToStart($)
+}
+
 async function refresh($: EngineInterface, path?: string) {
   try {
     const shown = await read($, view)
@@ -174,6 +189,29 @@ export const register: Register = on => {
     if (count === 0) return { text: 'No Markdown files in this session yet.' }
 
     return { text: `Markdown pane: ${count} ${count === 1 ? 'file' : 'files'}.` }
+  })
+
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const reply = e.props.text
+    if (!hasMention(reply) || reply.length > MAX_REPLY_CHARS || CONTROL.test(reply)) return next(e)
+    if (e.surface === 'terminal' && !e.props.isFirstOfReply) return next(e)
+    const known = await read($, files)
+    if (known.length === 0) return next(e)
+    const { cwd, home } = await placeOf($)
+    const linked = linkify(reply, new Set(known), cwd, home)
+    if (linked.hrefs.length === 0 || linked.hrefs.length > MAX_LINKS || linked.text.length > MAX_REPLY_CHARS) return next(e)
+    const { Box, Markdown, Text } = $.ui.resolve(e)
+    const body = <Markdown key="reply" text={linked.text} pressableLinks={linked.hrefs} onLinkPress={link => openHref($, link.href)} />
+    if (e.surface !== 'terminal') return body
+
+    return (
+      <Box flexDirection="row" marginTop={1}>
+        <Box minWidth={2}>
+          <Text color="text">{home.startsWith(MAC_HOME) ? MAC_BULLET : BULLET}</Text>
+        </Box>
+        <Box flexDirection="column">{body}</Box>
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
