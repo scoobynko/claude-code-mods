@@ -2,13 +2,16 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { MdView } from '../types'
+import { layout, load } from './document'
 import { displayPath, mentionsIn, resolvePath } from './paths'
 
 const PANE = 'md-view'
 const TITLE = 'Markdown'
 const MAX_FILES = 200
 const MIN_COLUMNS = 20
+const MAX_BYTES = 4 * 1024 * 1024
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const EMPTY_VIEW: MdView = { mode: 'list', path: '', text: '', totalChars: 0, error: '' }
 
 const files = atom({ plugin: 'md-view', key: 'files' } as const, [])
@@ -73,8 +76,51 @@ async function listFiles($: EngineInterface) {
   await update($, view, shown => ({ ...(shown ?? EMPTY_VIEW), mode: 'list' }))
 }
 
+async function readFile($: EngineInterface, path: string) {
+  try {
+    const stat = await $.fs.stat(path)
+    if (stat.kind !== 'file') return { text: '', totalChars: 0, error: 'Not a file.' }
+    if (stat.size > MAX_BYTES) return { text: '', totalChars: 0, error: 'Too large to preview.' }
+    return { ...load(await $.fs.read(path)), error: '' }
+  } catch {
+    return { text: '', totalChars: 0, error: 'File not found.' }
+  }
+}
+
+async function showFile($: EngineInterface, path: string) {
+  const file = await readFile($, path)
+  await update($, view, () => ({ mode: 'file', path, ...file }))
+}
+
+async function scrollToStart($: EngineInterface) {
+  try {
+    await $.ui.scroll({ in: PANE, to: 'start' })
+  } catch {
+    return
+  }
+}
+
 async function pick($: EngineInterface, path: string) {
-  await update($, view, () => ({ ...EMPTY_VIEW, mode: 'file', path }))
+  await showFile($, path)
+  await scrollToStart($)
+}
+
+async function refresh($: EngineInterface, path?: string) {
+  try {
+    const shown = await read($, view)
+    if (shown.mode !== 'file' || (path !== undefined && path !== shown.path)) return
+    const file = await readFile($, shown.path)
+    if (file.text === shown.text && file.error === shown.error) return
+    await update($, view, now => (now?.mode === 'file' && now.path === shown.path ? { ...now, ...file } : (now ?? EMPTY_VIEW)))
+  } catch {
+    return
+  }
+}
+
+async function afterWrite($: EngineInterface, raw: string) {
+  await rememberSafely($, [raw])
+  const { cwd, home } = await placeOf($)
+  await refresh($, resolvePath(raw, cwd, home))
 }
 
 export const register: Register = on => {
@@ -97,7 +143,31 @@ export const register: Register = on => {
     return result
   })
 
-  on('command.run', { command: 'md-view' }, async $ => {
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    const raw = WRITE_TOOLS.has(String(e.tool)) ? pathOfInput(e) : ''
+    if (raw) await afterWrite($, raw)
+
+    return ran
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    await refresh($)
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'md-view' }, async ($, e) => {
+    const asked = (e.args ?? '').trim().replace(/^@/, '')
+    if (asked) {
+      const { cwd, home } = await placeOf($)
+      const path = resolvePath(asked, cwd, home)
+      await showFile($, path)
+      await rememberSafely($, [path])
+      await openPane($, true)
+
+      return { text: `Previewing ${displayPath(path, cwd, home)}.` }
+    }
     await listFiles($)
     await openPane($, true)
     const count = (await read($, files)).length
@@ -107,27 +177,57 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
     const shown = await read($, view)
     const known = await read($, files)
     const { cwd, home } = await placeOf($)
     const columns = Math.max(MIN_COLUMNS, e.props.bodyColumns)
-    const focused = Math.max(0, known.indexOf(shown.path))
-    const count = `${known.length} Markdown ${known.length === 1 ? 'file' : 'files'}, newest first`
+
+    if (shown.mode === 'list') {
+      const focused = Math.max(0, known.indexOf(shown.path))
+      const count = `${known.length} Markdown ${known.length === 1 ? 'file' : 'files'}, newest first`
+
+      return (
+        <Box flexDirection="column" width={columns}>
+          <Text dimColor>{known.length === 0 ? 'No Markdown files in this session yet.' : count}</Text>
+          {known.map((path, index) => (
+            <Button
+              key={`file-${index}`}
+              plain
+              dimColor={path !== shown.path}
+              autoFocus={index === focused ? true : undefined}
+              label={displayPath(path, cwd, home)}
+              onPress={() => pick($, path)}
+            />
+          ))}
+        </Box>
+      )
+    }
+
+    const parts = shown.error ? [] : layout(shown.text, columns)
+    const isCut = shown.totalChars > shown.text.length
+    const cut = `Showing the first ${shown.text.length.toLocaleString('en-US')} of ${shown.totalChars.toLocaleString('en-US')} characters.`
 
     return (
       <Box flexDirection="column" width={columns}>
-        <Text dimColor>{known.length === 0 ? 'No Markdown files in this session yet.' : count}</Text>
-        {known.map((path, index) => (
-          <Button
-            key={`file-${index}`}
-            plain
-            dimColor={path !== shown.path}
-            autoFocus={index === focused ? true : undefined}
-            label={displayPath(path, cwd, home)}
-            onPress={() => pick($, path)}
-          />
+        <Box paddingRight={2}>
+          <Text dimColor wrap="truncate-start">
+            {displayPath(shown.path, cwd, home)}
+          </Text>
+        </Box>
+        <Button key="files" plain dimColor label="← Files" onPress={() => listFiles($)} />
+        {shown.error !== '' && <Text dimColor>{shown.error}</Text>}
+        {shown.error === '' && parts.length === 0 && <Text dimColor>Empty file.</Text>}
+        {parts.map((part, index) => (
+          <Box marginTop={1}>
+            <Markdown key={`part-${index}`} text={part} />
+          </Box>
         ))}
+        {isCut && (
+          <Box marginTop={1}>
+            <Text dimColor>{cut}</Text>
+          </Box>
+        )}
       </Box>
     )
   })
