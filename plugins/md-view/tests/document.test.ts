@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { CHUNK_CHARS, MAX_CHARS, layout, load } from '../hooks/document'
+import { CHUNK_CHARS, MARKDOWN_CHARS, MAX_CHARS, layout, load } from '../hooks/document'
 
 const fencesOf = (part: string) => (part.match(/^```/gm) ?? []).length
 
@@ -45,7 +45,7 @@ test('splits a long document into chunks the Markdown element takes', async () =
   expect(loaded.text.length).toBe(loaded.totalChars)
   expect(parts.length).toBeGreaterThan(1)
   for (const part of parts) {
-    expect(part.length).toBeLessThanOrEqual(CHUNK_CHARS + 200)
+    expect(part.length).toBeLessThanOrEqual(CHUNK_CHARS)
     expect(fencesOf(part) % 2).toBe(0)
   }
   expect(parts.join('\n').includes('Paragraph 149')).toBe(true)
@@ -83,6 +83,10 @@ test('leaves a table in a fence nested in a list alone', async () => {
 })
 
 test('never hands the Markdown element more than it takes', async () => {
-  const parts = layout(`${'`'.repeat(2000)}\n${'x\n'.repeat(6000)}`, 80)
-  expect(Math.max(...parts.map(part => part.length))).toBeLessThanOrEqual(10_000)
+  const ticks = layout(`${'`'.repeat(2000)}\n${'x\n'.repeat(6000)}`, 80)
+  const info = layout(`\`\`\`${'a'.repeat(20_000)}\n${'x\n'.repeat(6000)}\`\`\``, 80)
+
+  expect(Math.max(...ticks.map(part => part.length))).toBeLessThanOrEqual(MARKDOWN_CHARS)
+  expect(Math.max(...info.map(part => part.length))).toBeLessThanOrEqual(MARKDOWN_CHARS)
+  expect(info.length).toBeLessThan(10)
 })

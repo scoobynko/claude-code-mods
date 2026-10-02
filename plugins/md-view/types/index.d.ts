@@ -1,9 +1,12 @@
-export type MdView = {
-  mode: 'list' | 'file'
-  path: string
+export type MdFile = {
   text: string
   totalChars: number
   error: string
+}
+
+export type MdView = {
+  path: string
+  file: MdFile | null
 }
 
 declare module 'claude-code' {

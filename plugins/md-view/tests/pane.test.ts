@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import { MARKDOWN_CHARS, MAX_CHARS } from '../hooks/document'
 import { GUIDE, PANE, README, SURFACES, host, run, say, start } from './host'
 
 test("lists what Claude brought up, newest first, without missing files or the person's own mentions", async ($, on) => {
@@ -126,12 +127,12 @@ test('says when a file is cut short', async ($, on) => {
 
     const shown = parts.reduce((sum, part) => sum + String(part.props.text).length, 0)
 
-    expect(long.length).toBeGreaterThan(60_000)
-    expect(shown).toBeGreaterThan(50_000)
-    expect(shown).toBeLessThanOrEqual(60_000)
+    expect(long.length).toBeGreaterThan(MAX_CHARS)
+    expect(shown).toBeGreaterThan(MAX_CHARS - 10_000)
+    expect(shown).toBeLessThanOrEqual(MAX_CHARS)
     expect(await ui.find({ type: 'Text', text: /^Showing the first [\d,]+ of [\d,]+ characters\.$/ })).toBeDefined()
     expect(parts.length).toBeGreaterThan(1)
-    expect(Math.max(...parts.map(part => String(part.props.text).length))).toBeLessThanOrEqual(10_000)
+    expect(Math.max(...parts.map(part => String(part.props.text).length))).toBeLessThanOrEqual(MARKDOWN_CHARS)
     await ui.press({ key: 'files' })
     await ui.unmount()
   }

@@ -1,19 +1,23 @@
-import { fenceAfter } from './fences'
+import { fenceAfter, marked } from './fences'
 
 export const MAX_CHARS = 60_000
-export const CHUNK_CHARS = 9_000
 export const MARKDOWN_CHARS = 10_000
+export const CHUNK_CHARS = 9_000
+export const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
 
-const LINE_CHARS = CHUNK_CHARS - 200
+const CONTROLS = new RegExp(CONTROL.source, 'g')
+const PIECE_CHARS = CHUNK_CHARS - 300
+const OPENER_CHARS = 200
 const FRONT_MATTER_CHARS = 4_000
 const FRONT_MATTER = /^---\n(?=[\w-]+:)([\s\S]*?)\n---(\n|$)/
-const SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+const RULE_CELL = /^:?-+:?$/
 
 export type Loaded = { text: string; totalChars: number }
 
+type Layout = { text: string; columns: number; parts: string[] }
+
 export const load = (raw: string): Loaded => {
-  const clean = raw.replace(/\r\n?/g, '\n').replace(CONTROL, '')
+  const clean = raw.replace(/\r\n?/g, '\n').replace(CONTROLS, '')
   if (clean.length <= MAX_CHARS) return { text: clean, totalChars: clean.length }
   const cut = clean.lastIndexOf('\n', MAX_CHARS)
   return { text: clean.slice(0, cut > 0 ? cut : MAX_CHARS), totalChars: clean.length }
@@ -36,7 +40,7 @@ const cellsOf = (row: string): string[] =>
     .map(cell => cell.trim())
 
 const shownLength = (cell: string): number =>
-  [...cell.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`~]/g, '')].length
+  [...cell.replace(/\[([^\][]*)\]\([^)]*\)/g, '$1').replace(/[*_`~]/g, '')].length
 
 const stack = (header: string[], rows: string[][]): string[] =>
   rows.flatMap((row, index) => [
@@ -44,30 +48,30 @@ const stack = (header: string[], rows: string[][]): string[] =>
     ...row.flatMap((cell, column) => (cell ? [`- **${header[column] ?? ''}:** ${cell}`] : [])),
   ])
 
-const isRow = (line: string | undefined): line is string => line !== undefined && line.includes('|') && line.trim() !== ''
-
 const narrowTables = (lines: string[], columns: number): string[] => {
+  const rows = marked(lines)
+  const isRow = (index: number) => {
+    const row = rows[index]
+    return row !== undefined && !row.isCode && row.line.includes('|') && row.line.trim() !== ''
+  }
   const out: string[] = []
-  let fence = ''
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
-    const wasOpen = fence
-    fence = fenceAfter(fence, line)
-    const rule = lines[i + 1] ?? ''
     const header = cellsOf(line)
-    const isTable = isRow(line) && rule.includes('-') && SEPARATOR.test(rule) && cellsOf(rule).length === header.length
+    const rule = cellsOf(lines[i + 1] ?? '')
+    const isTable = isRow(i) && !rows[i + 1]?.isCode && rule.length === header.length && rule.every(cell => RULE_CELL.test(cell))
     let end = i + 2
-    while (isTable && isRow(lines[end])) end++
-    if (wasOpen || fence || !isTable || end === i + 2) {
+    while (isTable && isRow(end)) end++
+    if (!isTable || end === i + 2) {
       out.push(line)
       continue
     }
-    const rows = lines.slice(i + 2, end).map(cellsOf)
+    const body = lines.slice(i + 2, end).map(cellsOf)
     const width = header.reduce(
-      (sum, cell, column) => sum + 3 + Math.max(shownLength(cell), ...rows.map(row => shownLength(row[column] ?? ''))),
+      (sum, cell, column) => sum + 3 + Math.max(shownLength(cell), ...body.map(row => shownLength(row[column] ?? ''))),
       1,
     )
-    out.push(...(width > columns ? stack(header, rows) : lines.slice(i, end)))
+    out.push(...(width > columns ? stack(header, body) : lines.slice(i, end)))
     i = end - 1
   }
   return out
@@ -85,28 +89,32 @@ const chunk = (lines: string[]): string[] => {
     current = fence ? [opener] : []
     size = fence ? opener.length + 1 : 0
   }
+  const push = (piece: string, isClosing: boolean) => {
+    const closing = fence ? fence.length + 1 : 0
+    if (!isClosing && size + piece.length + 1 + closing > CHUNK_CHARS) flush()
+    current.push(piece)
+    size += piece.length + 1
+  }
   for (const line of lines) {
+    const next = fenceAfter(fence, line)
     const isBreak = !fence && line.trim() === ''
-    if (size + line.length + 1 > CHUNK_CHARS || (isBreak && size > CHUNK_CHARS / 2)) flush()
+    if (isBreak && size > CHUNK_CHARS / 2) flush()
     if (isBreak && current.length === 0) continue
-    for (let at = 0; at < Math.max(line.length, 1); at += LINE_CHARS) {
-      if (at > 0) flush()
-      const piece = line.slice(at, at + LINE_CHARS)
-      current.push(piece)
-      size += piece.length + 1
+    for (let at = 0; at < Math.max(line.length, 1); at += PIECE_CHARS) {
+      push(line.slice(at, at + PIECE_CHARS), fence !== '' && next === '')
     }
-    const wasOpen = fence
-    fence = fenceAfter(fence, line)
-    if (!wasOpen && fence) opener = line
+    if (!fence && next) opener = line.length <= OPENER_CHARS ? line : next
+    fence = next
   }
   flush()
   return chunks
 }
 
-const slices = (part: string): string[] =>
-  Array.from({ length: Math.ceil(part.length / MARKDOWN_CHARS) }, (_, index) =>
-    part.slice(index * MARKDOWN_CHARS, (index + 1) * MARKDOWN_CHARS),
-  )
+let last: Layout | null = null
 
-export const layout = (text: string, columns: number): string[] =>
-  chunk(narrowTables(fenceFrontMatter(text).split('\n'), columns)).flatMap(slices)
+export const layout = (text: string, columns: number): string[] => {
+  if (last?.text === text && last.columns === columns) return last.parts
+  const parts = chunk(narrowTables(fenceFrontMatter(text).split('\n'), columns))
+  last = { text, columns, parts }
+  return parts
+}
