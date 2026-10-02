@@ -1,15 +1,31 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ImageItem } from '../types'
+import type { ImageFile, ImageItem } from '../types'
 import { collect } from './collect'
 import type { Found, Message } from './collect'
+import { fit, pngSize } from './picture'
 
 const PANE = 'images'
 const LIST_ROWS = 8
+const FRAGMENT_ROWS = 3
+const CHROME_ROWS = 2
+const MIN_PICTURE_ROWS = 4
+const NO_CONVERTER = 2
+const EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+const MATERIALIZE = [
+  'mkdir -p "$1" || exit 1',
+  'if [ "$4" = decode ]; then base64 --decode > "$2" || exit 1; fi',
+  'if [ "$2" != "$3" ]; then',
+  '  sips -s format png "$2" --out "$3" >/dev/null 2>&1 || magick "$2" "$3" 2>/dev/null || convert "$2" "$3" 2>/dev/null || exit 2',
+  '  if [ "$4" = decode ]; then rm -f "$2"; fi',
+  'fi',
+  'head -c 24 "$3" | base64',
+].join('\n')
 
 const items = atom({ plugin: 'image-preview', key: 'items' } as const, [])
 const selected = atom({ plugin: 'image-preview', key: 'selected' } as const, '')
+const files = atom({ plugin: 'image-preview', key: 'files' } as const, {})
 const seen = atom({ plugin: 'image-preview', key: 'seen' } as const, {})
 
 type Dated = Found & { at?: number }
@@ -46,8 +62,35 @@ async function scan($: EngineInterface): Promise<Dated[]> {
   return dated
 }
 
-async function show($: EngineInterface, id: string) {
+async function tempDir($: EngineInterface, sessionId?: string) {
+  const base = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
+  return `${base}/claude-image-preview-${sessionId ?? (await $.session.id())}`
+}
+
+async function materialize($: EngineInterface, one: Found): Promise<ImageFile> {
+  const dir = await tempDir($)
+  const isPngFile = one.kind === 'path' && /\.png$/i.test(one.path)
+  const out = isPngFile ? one.path : `${dir}/${one.id}.png`
+  const source =
+    one.kind === 'path' ? one.path : one.mediaType === 'image/png' ? out : `${dir}/${one.id}.${EXTENSIONS[one.mediaType] ?? 'img'}`
+  const argv = ['sh', '-c', MATERIALIZE, 'sh', dir, source, out, one.kind === 'block' ? 'decode' : 'keep']
+
+  try {
+    const ran = await $.process.run(argv, one.kind === 'block' ? { stdin: one.data } : {})
+    if (ran.exitCode === NO_CONVERTER) return { error: 'Showing this image needs sips or ImageMagick to convert it to PNG.' }
+    const size = ran.exitCode === 0 ? pngSize(ran.stdout) : undefined
+    return size ? { file: out, ...size } : { error: 'This image could not be prepared for preview.' }
+  } catch {
+    return { error: 'Image previews need a shell (macOS or Linux).' }
+  }
+}
+
+async function show($: EngineInterface, id: string, found?: Dated[]) {
   await update($, selected, () => id)
+  if ((await read($, files))[id]) return
+  const one = (found ?? (await scan($))).find(candidate => candidate.id === id)
+  const file: ImageFile = one ? await materialize($, one) : { error: 'This image is no longer in the conversation.' }
+  await update($, files, all => ({ ...all, [id]: file }))
 }
 
 async function refresh($: EngineInterface) {
@@ -61,7 +104,8 @@ async function refresh($: EngineInterface) {
   const current = await read($, selected)
   const newest = merged.at(-1)
   const isFollowing = current === '' || current === before.at(-1)?.id
-  if (newest && isFollowing) await show($, newest.id)
+  if (newest && isFollowing) await show($, newest.id, found)
+  else if (current) await show($, current, found)
 
   return merged.length
 }
@@ -83,13 +127,27 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const list = [...(await read($, items))].reverse()
     if (list.length === 0) return <Text dimColor>No images in this session yet.</Text>
 
     const current = await read($, selected)
     const at = Math.max(0, list.findIndex(item => item.id === current))
     const first = Math.max(0, Math.min(at - Math.floor(LIST_ROWS / 2), list.length - LIST_ROWS))
+    const shown = list[at]
+    const label = shown?.label ?? ''
+    const file = (await read($, files))[shown?.id ?? '']
+    const columns = e.props.bodyColumns
+    const listRows = Math.min(list.length, LIST_ROWS) + (list.length > LIST_ROWS ? 1 : 0)
+    const room = Math.max(MIN_PICTURE_ROWS, e.props.scroll.bodyRows - listRows - FRAGMENT_ROWS - CHROME_ROWS)
+
+    const picture = () => {
+      if (!file) return <Text dimColor>Loading…</Text>
+      if ('error' in file) return <Text dimColor>{file.error}</Text>
+      if (e.surface !== 'terminal') return <Markdown key="preview" text={`[Open ${label}](file://${encodeURI(file.file)})`} />
+      const { Image } = $.ui.resolve(e)
+      return <Image key="preview" source={{ file: file.file, format: 'png' }} {...fit(file, columns, room)} alt={label} />
+    }
 
     return (
       <Box flexDirection="column">
@@ -104,6 +162,12 @@ export const register: Register = on => {
           )
         })}
         {list.length > LIST_ROWS && <Text dimColor>{list.length} images</Text>}
+        <Box marginTop={1} flexDirection="column">
+          {picture()}
+          <Text dimColor wrap="wrap">
+            {(shown?.fragment ?? '').slice(0, columns * FRAGMENT_ROWS)}
+          </Text>
+        </Box>
       </Box>
     )
   })

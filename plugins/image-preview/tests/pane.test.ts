@@ -123,3 +123,98 @@ test('windows a long list around the selection', async ($, on) => {
   expect(shown.some(button => button.props.dimColor === false)).toBe(true)
   expect(String(shown.at(-1)?.props.label)).toMatch(/^1[0-2]: pasted/)
 })
+
+test('shows the newest image at the pane width, converted to PNG, with the fragment of its message', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on, { width: 800, height: 400 })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const picture = await ui.find({ type: 'Image', key: 'preview' })
+  const file = String((picture?.props.source as { file?: string } | undefined)?.file)
+
+  expect(file).toMatch(new RegExp(`^${DIR}/[a-z0-9-]+\\.png$`))
+  expect(picture?.props).toMatchObject({ source: { file, format: 'png' }, columns: 60, rows: 15, alt: 'Read mockup.jpg' })
+  expect(await ui.find({ type: 'Text', text: 'Let me look at the mockup.' })).toBeDefined()
+  expect(runs).toHaveLength(1)
+  expect(runs[0]?.argv.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(runs[0]?.argv.slice(3)).toEqual(['sh', DIR, file.replace(/png$/, 'jpg'), file, 'decode'])
+  expect(runs[0]?.init?.stdin).toBe(SHOT)
+})
+
+test('shows a picked image and prepares each image once', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const [newer, older] = await buttons(ui)
+
+  await ui.press({ key: String(older?.key) })
+  expect((await ui.find({ type: 'Image', key: 'preview' }))?.props.alt).toBe('pasted')
+  expect(await ui.find({ type: 'Text', text: 'Why is this button off-centre? [Image #1]' })).toBeDefined()
+  expect(runs[1]?.argv[5]).toBe(runs[1]?.argv[6])
+
+  await ui.press({ key: String(newer?.key) })
+  await ui.press({ key: String(older?.key) })
+  expect(runs).toHaveLength(2)
+})
+
+test('caps a tall image to the rows the pane has left', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on, { width: 100, height: 4000 })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const picture = await ui.find({ type: 'Image', key: 'preview' })
+
+  expect(Number(picture?.props.rows)).toBeLessThanOrEqual(PROPS.scroll.bodyRows - 2 - 3)
+  expect(Number(picture?.props.columns)).toBeGreaterThanOrEqual(1)
+  expect(Number(picture?.props.columns)).toBeLessThan(10)
+})
+
+test('says why when the image cannot be converted', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on, { exitCode: 2 })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /sips or ImageMagick/ })).toBeDefined()
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('says why when no shell can be run', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  on('process.run', () => {
+    throw new Error('spawn sh ENOENT')
+  })
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /macOS or Linux/ })).toBeDefined()
+})
+
+test('says so when the image is gone from the conversation', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const older = (await buttons(ui))[1]
+  conversation.length = 0
+
+  await ui.press({ key: String(older?.key) })
+
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /no longer in the conversation/ })).toBeDefined()
+})
+
+test('links to the file where the surface draws no images', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'desktop' })
+  const link = await ui.find({ type: 'Markdown', key: 'preview' })
+
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(String(link?.props.text)).toMatch(new RegExp(`^\\[Open Read mockup\\.jpg\\]\\(file://${DIR}/[a-z0-9-]+\\.png\\)$`))
+  expect(await labels(ui)).toEqual(['Read mockup.jpg', 'pasted'])
+})
