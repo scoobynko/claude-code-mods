@@ -4,7 +4,7 @@ import { expect, test } from 'claude-code/testing'
 import { GUIDE, PANE, SURFACES, host, say, start } from './host'
 
 const GUIDE_HREF = 'file:///proj/docs/guide.md'
-const ENGINE = { type: 'Text', children: ['ENGINE'] }
+const ENGINE = { type: 'Text' as const, children: ['ENGINE'] }
 
 const answerReplies = (on: On) => on('ui.render', { component: 'AssistantMessage' }, () => ENGINE)
 

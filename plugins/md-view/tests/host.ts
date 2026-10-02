@@ -37,7 +37,7 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
     yield { kind: 'text', index: 0, text: step.answer }
     return { turnId: e.turnId, index: e.index, answer: step.answer, toolUses: step.toolUses, stopReason: 'end_turn', usage: null }
   })
-  on('command.register', () => ({ value: {} }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('fs.stat', (_, e) => {
     const text = disk[e.path]
     if (text === undefined) throw new Error('ENOENT')
@@ -57,6 +57,9 @@ export const host = (on: On, messages: SessionMessage[] = SAID, home = '/Users/m
 }
 
 export const start = ($: Engine) => $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+
+export const run = ($: Engine, args = '') =>
+  $.command.run({ command: 'md-view', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 170 } })
 
 export type Host = ReturnType<typeof host>
 

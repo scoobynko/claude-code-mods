@@ -79,7 +79,7 @@ async function openPane($: EngineInterface, isFocused: boolean) {
 }
 
 async function listFiles($: EngineInterface) {
-  await update($, view, shown => ({ ...(shown ?? EMPTY_VIEW), mode: 'list' }))
+  await update($, view, (shown): MdView => ({ ...(shown ?? EMPTY_VIEW), mode: 'list' }))
 }
 
 async function readFile($: EngineInterface, path: string) {
@@ -95,7 +95,7 @@ async function readFile($: EngineInterface, path: string) {
 
 async function showFile($: EngineInterface, path: string) {
   const file = await readFile($, path)
-  await update($, view, () => ({ mode: 'file', path, ...file }))
+  await update($, view, (): MdView => ({ mode: 'file', path, ...file }))
 }
 
 async function scrollToStart($: EngineInterface) {
@@ -126,7 +126,7 @@ async function refresh($: EngineInterface, path?: string) {
     if (shown.mode !== 'file' || (path !== undefined && path !== shown.path)) return
     const file = await readFile($, shown.path)
     if (file.text === shown.text && file.error === shown.error) return
-    await update($, view, now => (now?.mode === 'file' && now.path === shown.path ? { ...now, ...file } : (now ?? EMPTY_VIEW)))
+    await update($, view, (now): MdView => (now?.mode === 'file' && now.path === shown.path ? { ...now, ...file } : (now ?? EMPTY_VIEW)))
   } catch {
     return
   }
@@ -173,7 +173,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'md-view' }, async ($, e) => {
-    const asked = (e.args ?? '').trim().replace(/^@/, '')
+    const asked = e.args.trim().replace(/^@/, '')
     if (asked) {
       const { cwd, home } = await placeOf($)
       const path = resolvePath(asked, cwd, home)

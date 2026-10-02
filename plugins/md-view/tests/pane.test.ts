@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { GUIDE, PANE, README, SURFACES, host, say, start } from './host'
+import { GUIDE, PANE, README, SURFACES, host, run, say, start } from './host'
 
 test("lists what Claude brought up, newest first, without missing files or the person's own mentions", async ($, on) => {
   host(on)
@@ -18,7 +18,7 @@ test('/md-view opens the pane focused on the list', async ($, on) => {
   const { opened } = host(on)
   await start($)
 
-  expect(await $.command.run({ command: 'md-view' })).toMatchObject({ text: 'Markdown pane: 2 files.' })
+  expect(await run($)).toMatchObject({ text: 'Markdown pane: 2 files.' })
   expect(opened).toEqual([{ id: 'md-view', title: 'Markdown', closeOnEscape: true, focus: true }])
 })
 
@@ -26,7 +26,7 @@ test('says so when the session has no files', async ($, on) => {
   host(on, [])
   await start($)
 
-  expect(await $.command.run({ command: 'md-view' })).toMatchObject({ text: 'No Markdown files in this session yet.' })
+  expect(await run($)).toMatchObject({ text: 'No Markdown files in this session yet.' })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
@@ -89,7 +89,7 @@ test('/md-view with a path previews that file', async ($, on) => {
   const { opened } = host(on, [])
   await start($)
 
-  expect(await $.command.run({ command: 'md-view', args: ' @README.md ' })).toMatchObject({ text: 'Previewing README.md.' })
+  expect(await run($, ' @README.md ')).toMatchObject({ text: 'Previewing README.md.' })
   expect(opened).toHaveLength(1)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
