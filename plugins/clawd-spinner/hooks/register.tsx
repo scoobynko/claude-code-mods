@@ -98,11 +98,17 @@ const CODE_VALUE_START = new RegExp(`"(?:${CODE_KEYS.join('|')})"\\s*:\\s*"`, 'g
 const KEY_PREFIX_WINDOW = 2 * Math.max(...CODE_KEYS.map(key => `"${key}":"`.length))
 const FENCE = /^\s*```/
 const KEY = 'clawd'
+const TYPING_SOUND = 'sounds/typing.wav'
+const TYPING_GAIN = 0.5
+const SOUND_KEY = 'sound'
+const SOUND_COMMAND = 'clawd-sound'
+const SOUND_LABEL = '[♪]'
 
 type Cell = readonly [number, number, number]
 type Floating = { text: string; bornAt: number }
 type ValueScan = { json: string; cursor: number; isInValue: boolean; line: string }
 type FenceScan = { line: string; isInFence: boolean }
+type Sound = { isOn: boolean; canPlay: boolean; loaded?: Promise<void>; stop?: AbortController }
 
 const BLANK: Cell = [SPACE, TERMINAL_DEFAULT, TERMINAL_DEFAULT]
 
@@ -241,9 +247,54 @@ const hmOpacity = (age: number) => {
   return 1
 }
 
-function startTicker($: EngineInterface, spinners: Set<string>, nextFrame: () => string | undefined): Timer {
+function syncSound($: EngineInterface, sound: Sound, isTyping: boolean) {
+  const shouldPlay = sound.isOn && sound.canPlay && isTyping
+  if (shouldPlay === (sound.stop !== undefined)) return
+  if (!shouldPlay) {
+    sound.stop?.abort()
+    sound.stop = undefined
+    return
+  }
+
+  const stop = new AbortController()
+  sound.stop = stop
+  const giveUp = () => {
+    if (stop.signal.aborted) return
+    sound.canPlay = false
+    sound.stop = undefined
+  }
+  void $.audio.play({ asset: TYPING_SOUND }, { shouldLoop: true, gain: TYPING_GAIN, signal: stop.signal }).then(giveUp, giveUp)
+}
+
+function loadSound($: EngineInterface, sound: Sound) {
+  sound.loaded ??= $.store.get(SOUND_KEY).then(
+    saved => {
+      sound.isOn = saved === true
+    },
+    () => undefined,
+  )
+  return sound.loaded
+}
+
+async function toggleSound($: EngineInterface, sound: Sound, isTyping: boolean) {
+  await loadSound($, sound)
+  sound.isOn = !sound.isOn
+  sound.canPlay = true
+  syncSound($, sound, isTyping)
+  $.ui.invalidate('ui.render')
+  await $.store.set(SOUND_KEY, sound.isOn).catch(() => undefined)
+}
+
+function startTicker(
+  $: EngineInterface,
+  spinners: Set<string>,
+  nextFrame: () => string | undefined,
+  sound: Sound,
+  isTyping: () => boolean,
+): Timer {
   return $.clock.every(FRAME_MS, () => {
     const cells = nextFrame()
+    syncSound($, sound, isTyping())
     if (cells === undefined) return
     for (const requestId of spinners) {
       void $.ui.blit({ requestId, key: KEY, cells }).then(
@@ -267,6 +318,7 @@ export const register: Register = on => {
   let hmCount = 0
   let ticks = 0
   let ticker: Timer | undefined
+  const sound: Sound = { isOn: false, canPlay: true }
 
   const now = () => ticks * FRAME_MS
   const travelled = (intake: Floating) => Math.floor((now() - intake.bornAt) / MS_PER_COLUMN)
@@ -333,6 +385,20 @@ export const register: Register = on => {
     return spinners.size ? frame() : undefined
   }
 
+  const isTyping = () => ticker !== undefined && spinners.size > 0 && !isThinking
+
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: SOUND_COMMAND, description: 'Turn Clawd’s typing sound on or off' })
+
+    return next(e)
+  })
+
+  on('command.run', { command: SOUND_COMMAND }, async $ => {
+    await toggleSound($, sound, isTyping())
+
+    return { text: sound.isOn ? 'Typing sound on.' : 'Typing sound off.' }
+  })
+
   on('turn.start', ($, e, next) => {
     intakes = []
     codeLines = []
@@ -340,7 +406,7 @@ export const register: Register = on => {
     pendingIntake = 0
     isThinking = false
     hm = undefined
-    ticker ??= startTicker($, spinners, nextFrame)
+    ticker ??= startTicker($, spinners, nextFrame, sound, isTyping)
 
     return next(e)
   })
@@ -386,6 +452,7 @@ export const register: Register = on => {
     if (!e.agentId) {
       ticker?.cancel()
       ticker = undefined
+      syncSound($, sound, false)
     }
 
     return next(e)
@@ -397,14 +464,19 @@ export const register: Register = on => {
 
     isThinking = e.props.mode === 'thinking'
     spinners.add(e.requestId)
-    ticker ??= startTicker($, spinners, nextFrame)
-    const { Box, Raster } = $.ui.resolve(e)
+    ticker ??= startTicker($, spinners, nextFrame, sound, isTyping)
+    await loadSound($, sound)
+    const { Box, Button, Raster } = $.ui.resolve(e)
+    const toggle = () => void toggleSound($, sound, isTyping())
 
     return (
       <Box flexDirection="column">
         {line}
-        <Box marginLeft={2} marginTop={2} marginBottom={1}>
+        <Box marginLeft={2} marginTop={2}>
           <Raster key={KEY} columns={COLUMNS} rows={ROWS} cells={frame()} />
+        </Box>
+        <Box marginLeft={2} marginTop={1}>
+          <Button key="sound" plain dimColor={!sound.isOn} label={SOUND_LABEL} onPress={toggle} />
         </Box>
       </Box>
     )

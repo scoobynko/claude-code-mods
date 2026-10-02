@@ -1,6 +1,6 @@
 {
   "name": "clawd-spinner",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Clawd types on a tiny laptop under the spinner: the code Claude writes floats out of the screen, input tokens float in, and he turns to face you while thinking.",
   "author": {
     "name": "scoobynko",
