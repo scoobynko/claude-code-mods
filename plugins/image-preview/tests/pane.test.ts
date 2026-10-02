@@ -157,6 +157,27 @@ test('windows a long list around the selection', async ($, on) => {
   expect(String(shown.at(-1)?.props.label)).toMatch(/^1[0-2]: pasted/)
 })
 
+test('draws the picture right under the selected row, with the other rows after it', async ($, on) => {
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    role: 'user',
+    content: [{ type: 'text', text: `shot ${i + 1}` }, image('image/png', String.fromCharCode(65 + i).repeat(300))],
+  }))
+  answerSession(on, many)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  const order = async () =>
+    (await ui.findAll({})).flatMap(one => (String(one.key).startsWith('pick-') ? ['row'] : one.key === 'preview' ? ['picture'] : [])).join(' ')
+
+  expect(await order()).toBe('row picture row row row row row row row')
+
+  const last = (await buttons(ui)).at(-1)
+  await ui.press({ key: String(last?.key) })
+
+  expect(await order()).toBe('row row row row row picture row row row')
+  expect(await ui.find({ type: 'Text', text: '12 images' })).toBeDefined()
+})
+
 test('shows the newest image at the pane width, converted to PNG, with the fragment of its message', async ($, on) => {
   answerSession(on, CONVERSATION)
   const runs = answerProcess(on, { width: 800, height: 400 })
