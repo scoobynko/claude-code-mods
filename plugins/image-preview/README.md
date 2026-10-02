@@ -4,7 +4,7 @@
 
 - Newest first. `1`–`9`, or the arrows and Enter, pick an image; Esc closes the pane.
 - New images show up while the pane is open.
-- Click the picture, or press `e`, to enlarge it across the terminal; click it again, or press `e` or Esc, to go back to the list. `o` opens it in your system's image viewer.
+- Click the picture, or press `e`, to enlarge it across the terminal; click it again, or press `e` or Esc, to go back to the list. `o` opens it in your system's image viewer. While enlarged, closing the pane any other way also goes back to the list first.
 - Pictures draw in terminals with the kitty graphics protocol (Ghostty, kitty). Other terminals show the image's name in its place, and the desktop app links to the image file.
 - Needs macOS or Linux. Images that are not PNG are converted with `sips` (macOS) or ImageMagick.
 

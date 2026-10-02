@@ -32,7 +32,7 @@ const MATERIALIZE = [
   'printf "%s\\n" "$out"',
 ].join('\n')
 
-const VIEW = 'case "$(uname)" in Darwin) open "$1" ;; *) xdg-open "$1" ;; esac'
+const VIEW = 'case "$(uname)" in Darwin) open "$1" ;; *) xdg-open "$1" >/dev/null 2>&1 & ;; esac'
 
 const items = atom({ plugin: 'image-preview', key: 'items' } as const, [])
 const selected = atom({ plugin: 'image-preview', key: 'selected' } as const, '')
@@ -50,7 +50,7 @@ const noted = new Set<string>()
 const stale = new Set<string>()
 let queue: Promise<unknown> = Promise.resolve()
 let isRefreshQueued = false
-let screenColumns = 0
+let screen = { columns: 0, rows: 0 }
 let ended = 0
 
 function inOrder<T>(task: () => Promise<T>): Promise<T> {
@@ -234,7 +234,9 @@ async function refreshSoon($: EngineInterface, scope: string) {
 }
 
 async function end($: EngineInterface, sessionId: string) {
+  const [wasZoomed, panes] = await Promise.all([read($, zoomed), $.ui.panes().catch(() => [])])
   await forget($)
+  if (wasZoomed && panes.some(pane => pane.id === PANE)) await resize($, false)
   await $.process.run(['rm', '-rf', await tempDir($, sessionId)]).catch(() => undefined)
 }
 
@@ -251,14 +253,18 @@ async function notice($: EngineInterface, role: string | undefined, blocks: read
   return isNews
 }
 
-async function zoom($: EngineInterface, isZoomed: boolean) {
-  await update($, zoomed, () => isZoomed)
-  const wide = isZoomed && screenColumns > TRANSCRIPT_COLUMNS ? { columns: screenColumns - TRANSCRIPT_COLUMNS } : {}
+async function resize($: EngineInterface, isZoomed: boolean) {
+  const wide = isZoomed && screen.columns > TRANSCRIPT_COLUMNS ? { columns: screen.columns - TRANSCRIPT_COLUMNS, rows: screen.rows } : {}
   await $.ui.open({ id: PANE, title: 'Images', focus: true, closeOnEscape: true, ...wide })
 }
 
+async function zoom($: EngineInterface, isZoomed: boolean) {
+  if ((await read($, zoomed)) !== isZoomed) await update($, zoomed, () => isZoomed)
+  await resize($, isZoomed)
+}
+
 async function toggleZoom($: EngineInterface) {
-  await zoom($, !(await read($, zoomed)))
+  await resize($, await update($, zoomed, isZoomed => !isZoomed))
 }
 
 async function view($: EngineInterface, file: string) {
@@ -339,7 +345,9 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const [kept, current, ready, isZoomed] = await Promise.all([read($, items), read($, selected), read($, files), read($, zoomed)])
-    if (e.viewport) screenColumns = e.viewport.columns + (e.props.placement === 'dock' ? e.props.bodyColumns : 0)
+    if (e.viewport && e.surface === 'terminal') {
+      screen = { columns: e.viewport.columns + (e.props.placement === 'dock' ? e.props.bodyColumns : 0), rows: e.viewport.rows }
+    }
     const list = [...kept].reverse()
     const at = Math.max(0, list.findIndex(item => item.id === current))
     const shown = list[at]
@@ -348,7 +356,8 @@ export const register: Register = on => {
     const first = Math.max(0, Math.min(at - Math.floor(LIST_ROWS / 2), list.length - LIST_ROWS))
     const file = ready[shown.id]
     const columns = e.props.bodyColumns
-    const isEnlarged = isZoomed && e.surface === 'terminal' && file !== undefined && !('error' in file)
+    const isEnlarged = isZoomed && e.surface === 'terminal'
+    const isDrawable = file !== undefined && !('error' in file)
     const listRows = Math.min(list.length, LIST_ROWS) + (list.length > LIST_ROWS ? 1 : 0)
     const taken = isEnlarged ? CHROME_ROWS : listRows + FRAGMENT_ROWS + CHROME_ROWS
     const room = Math.max(MIN_PICTURE_ROWS, e.props.scroll.bodyRows - taken)
@@ -363,21 +372,33 @@ export const register: Register = on => {
       const size = fit(file, columns, room)
       return (
         <Box flexDirection="column">
-          <Box flexDirection="column">
-            <Image key="preview" source={drawn} {...size} alt={shown.label} />
-            <Box position="absolute" top={0} left={0}>
-              <Client key="zone" module="./zone.tsx" props={size} width={size.columns} height={size.rows} />
-            </Box>
-          </Box>
-          <Box flexDirection="row" gap={3}>
-            <Button key="enlarge" plain hotkey="e" label={isEnlarged ? 'Back to list' : 'Enlarge'} onPress={() => void toggleZoom($)} />
-            <Button key="view" plain hotkey="o" label="Open in viewer" onPress={() => void view($, file.file)} />
+          <Image key="preview" source={drawn} {...size} alt={shown.label} />
+          <Box position="absolute" top={0} left={0}>
+            <Client key="zone" module="./zone.tsx" props={size} width={size.columns} height={size.rows} />
           </Box>
         </Box>
       )
     }
 
-    if (isEnlarged) return picture()
+    const actions = () => (
+      <Box flexDirection="row" gap={3}>
+        {(isEnlarged || isDrawable) && (
+          <Button key="enlarge" plain hotkey="e" label={isEnlarged ? 'Back to list' : 'Enlarge'} onPress={() => void toggleZoom($)} />
+        )}
+        {file !== undefined && !('error' in file) && (
+          <Button key="view" plain hotkey="o" label="Open in viewer" onPress={() => void view($, file.file)} />
+        )}
+      </Box>
+    )
+
+    if (isEnlarged) {
+      return (
+        <Box flexDirection="column">
+          {picture()}
+          {actions()}
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column">
@@ -392,6 +413,7 @@ export const register: Register = on => {
         {list.length > LIST_ROWS && <Text dimColor>{list.length} images</Text>}
         <Box marginTop={1} flexDirection="column">
           {picture()}
+          {e.surface === 'terminal' && actions()}
           <Text dimColor wrap="wrap">
             {shown.fragment.slice(0, columns * FRAGMENT_ROWS)}
           </Text>
