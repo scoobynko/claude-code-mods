@@ -1,0 +1,24 @@
+name: Branch name
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: .github/scripts/check-branch-name.sh "$BRANCH"
+
+      - name: Test the release scripts
+        run: |
+          .github/scripts/next-version.test.sh
+          .github/scripts/check-branch-name.test.sh
