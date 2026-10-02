@@ -17,6 +17,7 @@ declare module 'claude-code' {
       files: Record<string, ImageFile>
       seen: Record<string, number>
       agents: string[]
+      zoomed: boolean
     }
   }
 }

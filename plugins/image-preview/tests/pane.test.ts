@@ -5,7 +5,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import { PASTED, SHOT, call, image, pngHeader } from './fixtures'
 
 const PROPS = { title: 'Images', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
-const MOUNT = { plugin: 'image-preview', component: 'Pane', requestId: 'images', props: PROPS } as const
+const VIEWPORT = { columns: 139, rows: 50, isFullscreen: true }
+const MOUNT = { plugin: 'image-preview', component: 'Pane', requestId: 'images', props: PROPS, viewport: VIEWPORT } as const
 const DIR = '/tmp/t/claude-image-preview-s1'
 
 const CONVERSATION = [
@@ -78,7 +79,7 @@ type Drawn = Pick<Mounted, 'find' | 'findAll'>
 const terminal = ($: Engine) => $.ui.mount({ ...MOUNT, surface: 'terminal' })
 const preview = (ui: Drawn) => ui.find({ type: 'Image', key: 'preview' })
 
-const buttons = (ui: Drawn) => ui.findAll({ type: 'Button' })
+const buttons = async (ui: Drawn) => (await ui.findAll({ type: 'Button' })).filter(button => String(button.key).startsWith('pick-'))
 const labels = async (ui: Drawn) => (await buttons(ui)).map(button => String(button.props.label))
 
 test('opens the Images pane and lists pasted and tool images, newest first', async ($, on) => {
@@ -620,4 +621,154 @@ test('stops saving images when the session ends, and removes the folder last', a
   await ended
 
   expect(runs.map(run => run.argv[0])).toEqual(['sh', 'rm'])
+})
+
+test('enlarges the image on a click: a wide pane with no list, and back on another', async ($, on) => {
+  const { opens } = answerSession(on, CONVERSATION)
+  answerProcess(on, { width: 100, height: 4000 })
+  await open($)
+  const ui = await terminal($)
+  const before = Number((await preview(ui))?.props.rows)
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', in: 'zone' })
+
+  expect(opens.at(-1)).toEqual({ id: 'images', title: 'Images', focus: true, closeOnEscape: true, columns: 175, rows: 50 })
+  expect(await buttons(ui)).toHaveLength(0)
+  expect(Number((await preview(ui))?.props.rows)).toBeGreaterThan(before)
+  expect(await ui.find({ type: 'Text', text: 'Let me look at the mockup.' })).toBeUndefined()
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', in: 'zone' })
+
+  expect(opens.at(-1)).toEqual({ id: 'images', title: 'Images', focus: true, closeOnEscape: true })
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('enlarges from the keyboard too', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+
+  await ui.press({ key: 'enlarge' })
+
+  expect(await buttons(ui)).toHaveLength(0)
+  expect((await ui.find({ type: 'Button', key: 'enlarge' }))?.props).toMatchObject({ hotkey: 'e', label: 'Back to list' })
+})
+
+test('opens the shown image in the system viewer', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  const file = String(((await preview(ui))?.props.source as { file?: string } | undefined)?.file)
+
+  await ui.press({ key: 'view' })
+
+  expect(runs.at(-1)?.argv.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(runs.at(-1)?.argv[2]).toContain('open "$1"')
+  expect(runs.at(-1)?.argv.slice(3)).toEqual(['sh', file])
+})
+
+test('opens on the list again when the command is run while enlarged', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  await ui.press({ key: 'enlarge' })
+
+  await open($)
+
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('offers no enlarging where no picture is drawn', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Button', key: 'enlarge' })).toBeUndefined()
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('keeps the enlarged view, with a way back, when the shown image cannot be drawn', async ($, on) => {
+  const { conversation } = answerSession(on, CONVERSATION)
+  let exitCode = 0
+  on('process.run', (_, e) => ({
+    value: { exitCode, stdout: exitCode === 0 ? `${header(800, 400)}${written(e as Run)}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  const clock = mock.clock(on)
+  await open($)
+  const ui = await terminal($)
+  await ui.press({ key: 'enlarge' })
+
+  exitCode = 3
+  conversation.push(LATE)
+  await appendRow($, LATE)
+  await clock.settle()
+
+  expect(await ui.find({ type: 'Text', text: /could not be converted/ })).toBeDefined()
+  expect(await buttons(ui)).toHaveLength(0)
+  expect((await ui.find({ type: 'Button', key: 'enlarge' }))?.props.label).toBe('Back to list')
+  expect(await ui.find({ type: 'Button', key: 'view' })).toBeUndefined()
+})
+
+test('enlarges only on a plain left click', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'right', in: 'zone' })
+  expect(await buttons(ui)).toHaveLength(2)
+
+  await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', ctrl: true, in: 'zone' })
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('sizes the enlarged pane from the terminal, whatever another surface drew', async ($, on) => {
+  const { opens } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+  await $.ui.mount({ ...MOUNT, surface: 'desktop', viewport: { columns: 40, rows: 20 }, props: { ...PROPS, bodyColumns: 40 } })
+
+  await ui.press({ key: 'enlarge' })
+
+  expect(opens.at(-1)).toMatchObject({ columns: 175 })
+})
+
+test('toggles once per input when two come together', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+
+  await Promise.all([ui.press({ key: 'enlarge' }), ui.press({ key: 'enlarge' })])
+
+  expect(await buttons(ui)).toHaveLength(2)
+})
+
+test('returns the pane to its normal width when the session is cleared while enlarged', async ($, on) => {
+  const { opens } = answerSession(on, CONVERSATION)
+  answerProcess(on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  await open($)
+  const ui = await terminal($)
+  await ui.press({ key: 'enlarge' })
+
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } } as never)
+
+  expect(opens.at(-1)).toEqual({ id: 'images', title: 'Images', focus: true, closeOnEscape: true })
+})
+
+test('opens the viewer without waiting for it on Linux', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const runs = answerProcess(on)
+  await open($)
+  const ui = await terminal($)
+
+  await ui.press({ key: 'view' })
+
+  expect(runs.at(-1)?.argv[2]).toContain('xdg-open "$1" >/dev/null 2>&1 &')
 })
