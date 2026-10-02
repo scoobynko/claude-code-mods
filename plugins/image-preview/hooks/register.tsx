@@ -13,17 +13,22 @@ const FRAGMENT_ROWS = 3
 const CHROME_ROWS = 2
 const MIN_PICTURE_ROWS = 4
 const NO_CONVERTER = 2
+const NOT_CONVERTED = 3
 const MTIME_SLACK_MS = 2000
-const EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 const MATERIALIZE = [
   'umask 077',
   'mkdir -p "$1" || exit 1',
   'if [ "$4" = decode ]; then base64 --decode > "$2" || exit 1; fi',
-  'if [ "$2" != "$3" ]; then',
-  '  sips -s format png "$2" --out "$3" >/dev/null 2>&1 || magick "$2" "$3" 2>/dev/null || convert "$2" "$3" 2>/dev/null || exit 2',
+  'if [ "$(head -c 8 "$2" | base64)" = iVBORw0KGgo= ]; then',
+  '  if [ "$4" = decode ]; then mv "$2" "$3" || exit 1; out=$3; else out=$2; fi',
+  'else',
+  '  command -v sips >/dev/null 2>&1 || command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1 || exit 2',
+  '  sips -s format png "$2" --out "$3" >/dev/null 2>&1 || magick "$2[0]" "$3" 2>/dev/null || convert "$2[0]" "$3" 2>/dev/null || exit 3',
   '  if [ "$4" = decode ]; then rm -f "$2"; fi',
+  '  out=$3',
   'fi',
-  'head -c 24 "$3" | base64',
+  'head -c 24 "$out" | base64',
+  'printf "%s\\n" "$out"',
 ].join('\n')
 
 const items = atom({ plugin: 'image-preview', key: 'items' } as const, [])
@@ -40,6 +45,8 @@ const pending: Pending = new Map()
 const noted = new Set<string>()
 const stale = new Set<string>()
 let queue: Promise<unknown> = Promise.resolve()
+let isRefreshQueued = false
+let ended = 0
 
 function inOrder<T>(task: () => Promise<T>): Promise<T> {
   const run = queue.then(task, task)
@@ -68,10 +75,14 @@ const itemOf = (one: Dated): ImageItem => ({
 })
 
 const under = (base: string, path: string, roots: Roots) =>
-  path.startsWith('/') ? path : path.startsWith('~/') ? `${roots.home}${path.slice(1)}` : `${base}/${path.replace(/^\.\//, '')}`
+  path.startsWith('/')
+    ? path
+    : path === '~' || path.startsWith('~/')
+      ? `${roots.home}${path.slice(1)}`
+      : `${base}/${path.replace(/^\.\//, '')}`
 
 const spellings = (path: string, bases: readonly string[], roots: Roots) => [
-  ...new Set([roots.cwd, ...bases.map(base => under(roots.cwd, base, roots))].map(base => under(base, path, roots))),
+  ...new Set([...bases.map(base => under(roots.cwd, base, roots)), roots.cwd].map(base => under(base, path, roots))),
 ]
 
 async function rootsOf($: EngineInterface): Promise<Roots> {
@@ -120,11 +131,20 @@ async function everyone($: EngineInterface) {
   return [MAIN, ...new Set([...remembered, ...listed.map(agent => agent.id)])]
 }
 
+async function readFiles($: EngineInterface, found: readonly Dated[]) {
+  const read = [...new Set(found.flatMap(one => (one.kind === 'block' && one.readFrom ? [one.readFrom] : [])))]
+  const real = await Promise.all(read.map(path => $.fs.stat(path, { resolve: true }).then(stat => stat.realPath ?? path, () => path)))
+  return new Set(real.map(pathId))
+}
+
 async function relist($: EngineInterface, scope?: readonly string[]) {
   const [roots, before, ids] = await Promise.all([rootsOf($), read($, items), scope ?? everyone($)])
-  const found = (await Promise.all(ids.map(id => scan($, id === MAIN ? undefined : id, roots)))).flat()
+  const scanned = (await Promise.all(ids.map(id => scan($, id === MAIN ? undefined : id, roots)))).flat()
+  const hasFiles = before.some(item => item.file) || scanned.some(one => one.kind === 'path')
+  const alreadyRead = hasFiles ? await readFiles($, scanned) : new Set<string>()
+  const found = scanned.filter(one => !alreadyRead.has(one.id))
   const fresh = new Map(found.map(one => [one.id, itemOf(one)]))
-  const merged = [...before.filter(item => !fresh.has(item.id)), ...fresh.values()].sort(byTime)
+  const merged = [...before.filter(item => !fresh.has(item.id) && !alreadyRead.has(item.id)), ...fresh.values()].sort(byTime)
   if (JSON.stringify(merged) !== JSON.stringify(before)) await update($, items, () => merged)
 
   return { found, before, merged }
@@ -137,24 +157,20 @@ async function tempDir($: EngineInterface, sessionId?: string) {
 
 async function materialize($: EngineInterface, one: Source, version: number | undefined): Promise<ImageFile> {
   const dir = await tempDir($)
-  const converted = `${dir}/${one.id}.png`
   const plan =
     one.kind === 'path'
-      ? { source: one.path, out: /\.png$/i.test(one.path) ? one.path : converted, mode: 'keep', init: {} }
-      : {
-          source: one.mediaType === 'image/png' ? converted : `${dir}/${one.id}.${EXTENSIONS[one.mediaType] ?? 'img'}`,
-          out: converted,
-          mode: 'decode',
-          init: { stdin: one.data },
-        }
+      ? { source: one.path, mode: 'keep', init: {} }
+      : { source: `${dir}/${one.id}.src`, mode: 'decode', init: { stdin: one.data } }
 
   try {
-    const ran = await $.process.run(['sh', '-c', MATERIALIZE, 'sh', dir, plan.source, plan.out, plan.mode], plan.init)
+    const ran = await $.process.run(['sh', '-c', MATERIALIZE, 'sh', dir, plan.source, `${dir}/${one.id}.png`, plan.mode], plan.init)
     if (ran.exitCode === NO_CONVERTER) return { error: 'Showing this image needs sips or ImageMagick to convert it to PNG.', version }
-    const size = ran.exitCode === 0 ? pngSize(ran.stdout) : undefined
-    return size ? { file: plan.out, ...size, version } : { error: 'This image could not be prepared for preview.', version }
+    if (ran.exitCode === NOT_CONVERTED) return { error: 'This image could not be converted to PNG.', version }
+    const [header = '', file = ''] = ran.stdout.split('\n')
+    const size = ran.exitCode === 0 ? pngSize(header) : undefined
+    return size && file ? { file, ...size, version } : { error: 'This image could not be prepared for preview.', version }
   } catch {
-    return { error: 'Image previews need a shell (macOS or Linux).', version }
+    return { error: 'This image could not be prepared: no shell (macOS or Linux only), or it took too long.', version }
   }
 }
 
@@ -191,15 +207,30 @@ async function refresh($: EngineInterface, scope?: readonly string[]) {
 async function refreshStale($: EngineInterface) {
   const scope = [...stale]
   stale.clear()
+  isRefreshQueued = false
   const panes = await $.ui.panes()
   if (panes.some(pane => pane.id === PANE)) await refresh($, scope)
 }
 
 async function keep($: EngineInterface, found: Dated[]) {
+  const startedIn = ended
   const ready = await read($, files)
   for (const one of found) {
+    if (ended !== startedIn) return
     if (one.kind === 'block' && !isReady(ready[one.id], undefined)) await prepare($, one.id, one, undefined)
   }
+}
+
+async function refreshSoon($: EngineInterface, scope: string) {
+  stale.add(scope)
+  if (isRefreshQueued) return
+  isRefreshQueued = true
+  await inOrder(() => refreshStale($))
+}
+
+async function end($: EngineInterface, sessionId: string) {
+  await forget($)
+  await $.process.run(['rm', '-rf', await tempDir($, sessionId)]).catch(() => undefined)
 }
 
 async function notice($: EngineInterface, role: string | undefined, blocks: readonly Block[], agentId: string | undefined) {
@@ -219,6 +250,7 @@ async function forget($: EngineInterface) {
   pending.clear()
   noted.clear()
   stale.clear()
+  isRefreshQueued = false
   await Promise.all([
     update($, items, () => []),
     update($, selected, () => ''),
@@ -247,31 +279,25 @@ export const register: Register = on => {
   on('session.append', async ($, e, next) => {
     const kept = next(e)
     if (await notice($, e.message.role, e.message.content, e.agentId)) {
-      const isQueued = stale.size > 0
-      stale.add(e.agentId ?? MAIN)
-      if (!isQueued) {
-        void kept
-          .catch(() => undefined)
-          .then(() => inOrder(() => refreshStale($)))
-          .catch(() => undefined)
-      }
+      void kept
+        .catch(() => undefined)
+        .then(() => refreshSoon($, e.agentId ?? MAIN))
+        .catch(() => undefined)
     }
 
     return kept
   })
 
   on('session.compact', async ($, e, next) => {
-    if (e.agentId === undefined) {
-      const listed = await inOrder(() => relist($)).catch(() => undefined)
-      if (listed) void inOrder(() => keep($, listed.found)).catch(() => undefined)
-    }
+    const listed = await inOrder(() => relist($, [e.agentId ?? MAIN])).catch(() => undefined)
+    if (listed) void inOrder(() => keep($, listed.found)).catch(() => undefined)
 
     return next(e)
   })
 
   on('session.end', async ($, e, next) => {
-    const dir = await tempDir($, e.sessionId)
-    await Promise.all([$.process.run(['rm', '-rf', dir]).catch(() => undefined), inOrder(() => forget($))])
+    ended++
+    await inOrder(() => end($, e.sessionId))
 
     return next(e)
   })

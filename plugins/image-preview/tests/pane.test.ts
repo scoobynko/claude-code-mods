@@ -24,6 +24,8 @@ const header = (width: number, height: number) => `${pngHeader(width, height)}\n
 
 type Run = { argv: readonly string[]; init?: { stdin?: string } }
 
+const written = ({ argv }: Run) => (argv[7] === 'keep' && /\.png$/.test(argv[5] ?? '') ? argv[5] : argv[6])
+
 type Setup = { onOpen?: () => void; startedAt?: number; agents?: Record<string, unknown[]>; listed?: boolean }
 
 const answerSession = (on: On, messages: unknown[], { onOpen = () => {}, startedAt = 0, agents = {}, listed = true }: Setup = {}) => {
@@ -53,7 +55,7 @@ const answerProcess = (on: On, result: { width?: number; height?: number; exitCo
   on('process.run', (_, e) => {
     runs.push(e as Run)
     const exitCode = result.exitCode ?? 0
-    const stdout = exitCode === 0 ? header(result.width ?? 800, result.height ?? 400) : ''
+    const stdout = exitCode === 0 ? `${header(result.width ?? 800, result.height ?? 400)}${written(e as Run)}\n` : ''
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   return runs
@@ -168,7 +170,8 @@ test('shows the newest image at the pane width, converted to PNG, with the fragm
   expect(runs).toHaveLength(1)
   expect(runs[0]?.argv.slice(0, 2)).toEqual(['sh', '-c'])
   expect(runs[0]?.argv[2]).toMatch(/^umask 077\n/)
-  expect(runs[0]?.argv.slice(3)).toEqual(['sh', DIR, file.replace(/png$/, 'jpg'), file, 'decode'])
+  expect(runs[0]?.argv.slice(3)).toEqual(['sh', DIR, file.replace(/png$/, 'src'), file, 'decode'])
+  expect(runs[0]?.argv[2]).toContain('magick "$2[0]" "$3"')
   expect(runs[0]?.init?.stdin).toBe(SHOT)
 })
 
@@ -182,7 +185,7 @@ test('shows a picked image and prepares each image once', async ($, on) => {
   await ui.press({ key: String(older?.key) })
   expect((await preview(ui))?.props.alt).toBe('pasted')
   expect(await ui.find({ type: 'Text', text: 'Why is this button off-centre? [Image #1]' })).toBeDefined()
-  expect(runs[1]?.argv[5]).toBe(runs[1]?.argv[6])
+  expect(runs[1]?.argv[7]).toBe('decode')
 
   await ui.press({ key: String(newer?.key) })
   await ui.press({ key: String(older?.key) })
@@ -345,7 +348,7 @@ test('lists an image file a command wrote, drawn from where it is', async ($, on
     format: 'png',
     generation: Date.UTC(2026, 0, 1, 12, 0),
   })
-  expect(runs[0]?.argv.slice(4)).toEqual([DIR, '/work/shot.png', '/work/shot.png', 'keep'])
+  expect(runs[0]?.argv.slice(4)).toEqual([DIR, '/work/shot.png', expect.stringMatching(new RegExp(`^${DIR}/path-[a-z0-9]+\\.png$`)), 'keep'])
   expect(runs[0]?.init?.stdin).toBeUndefined()
 })
 
@@ -401,7 +404,7 @@ test('prepares an image once when two rows bring it together', async ($, on) => 
   on('process.run', async (_, e) => {
     runs.push(e as Run)
     await clock.sleep(100)
-    return { value: { exitCode: 0, stdout: header(800, 400), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: `${header(800, 400)}${written(e as Run)}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await open($)
   const ui = await terminal($)
@@ -421,7 +424,7 @@ test('tries again on a pick after a failed preview', async ($, on) => {
   const runs: Run[] = []
   on('process.run', (_, e) => {
     runs.push(e as Run)
-    return { value: { exitCode, stdout: exitCode === 0 ? header(800, 400) : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode, stdout: exitCode === 0 ? `${header(800, 400)}${written(e as Run)}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await open($)
   const ui = await terminal($)
@@ -548,4 +551,73 @@ test('lists a file once when two spellings lead to it', async ($, on) => {
 
   expect(await labels(ui)).toHaveLength(1)
   expect((await preview(ui))?.props.source).toMatchObject({ file: '/work/build/fig.png' })
+})
+
+test('tells a failed conversion from a missing converter', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  answerProcess(on, { exitCode: 3 })
+  await open($)
+  const ui = await terminal($)
+
+  expect(await ui.find({ type: 'Text', text: /could not be converted/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /sips or ImageMagick/ })).toBeUndefined()
+})
+
+test('lists a file once when Claude wrote it and then read it', async ($, on) => {
+  const { conversation } = answerSession(on, shoot())
+  answerProcess(on)
+  const clock = mock.clock(on)
+  answerFiles(on, { '/work/shot.png': 1000 })
+  await open($)
+  const ui = await terminal($)
+  expect((await labels(ui)).map(label => label.replace(/ {2}.*/, ''))).toEqual(['Bash shot.png'])
+
+  const [asked, answered] = call('Read', { file_path: '/work/shot.png' }, 't2', [image('image/png', SHOT)])
+  conversation.push(asked, answered)
+  await appendRow($, answered)
+  await clock.settle()
+
+  expect((await labels(ui)).map(label => label.replace(/ {2}.*/, ''))).toEqual(['Read shot.png'])
+})
+
+test('keeps the images of a subagent across its own compaction', async ($, on) => {
+  const explored = [...EXPLORED]
+  answerSession(on, CONVERSATION, { agents: { 'agent-1': explored }, listed: false })
+  const runs = answerProcess(on)
+  const clock = mock.clock(on)
+  const summary = [{ role: 'user' as const, text: 'Summary of the work so far.', toolUses: [] }]
+  on('session.compact', () => ({ messages: summary }))
+
+  await $.session.compact({ trigger: 'auto', agentId: 'agent-1', messages: summary })
+  await clock.settle()
+  expect(runs).toHaveLength(1)
+
+  explored.length = 0
+  await open($)
+  const ui = await terminal($)
+  const row = (await buttons(ui)).find(button => String(button.props.label).startsWith('Read diagram.png'))
+  await ui.press({ key: String(row?.key) })
+
+  expect((await preview(ui))?.props.alt).toBe('Read diagram.png')
+})
+
+test('stops saving images when the session ends, and removes the folder last', async ($, on) => {
+  answerSession(on, CONVERSATION)
+  const clock = mock.clock(on)
+  const runs: Run[] = []
+  on('process.run', async (_, e) => {
+    runs.push(e as Run)
+    if (e.argv[0] === 'sh') await clock.sleep(100)
+    return { value: { exitCode: 0, stdout: `${header(800, 400)}${written(e as Run)}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const summary = [{ role: 'user' as const, text: 'Summary of the work so far.', toolUses: [] }]
+  on('session.compact', () => ({ messages: summary }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+
+  await $.session.compact({ trigger: 'manual', messages: summary })
+  const ended = $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } } as never)
+  await clock.advance(1000)
+  await ended
+
+  expect(runs.map(run => run.argv[0])).toEqual(['sh', 'rm'])
 })

@@ -1,7 +1,7 @@
 export type Block = { type: string; [field: string]: unknown }
 export type Message = { role: string; content: readonly Block[] }
 export type Found = { id: string; label: string; fragment: string } & (
-  | { kind: 'block'; mediaType: string; data: string }
+  | { kind: 'block'; mediaType: string; data: string; readFrom?: string }
   | { kind: 'path'; path: string; bases: readonly string[]; from: 'call' | 'text' }
 )
 
@@ -16,10 +16,10 @@ const IMAGE_PATH = new RegExp(
   'giu',
 )
 const WHOLE_PATH = new RegExp(`^[^\\n]{1,512}${EXTENSION}$`, 'iu')
-const CHANGE_DIR = /(?:^|[;&|(\n])\s*cd\s+(?:"([^"\n]+)"|'([^'\n]+)'|((?:[^\s;&|\\]|\\.)+))/g
+const CHANGE_DIR = /(?:^|[;&|(\n])\s*cd\s+(?:"([^"\n]+)"|'([^'\n]+)'|((?:[^\s;&|()\\]|\\.)+))/g
 const MAX_FRAGMENT = 400
 const MAX_PATHS_PER_CALL = 12
-const MAX_BASES = 6
+const MAX_BASES = 8
 const SAMPLE = 64
 const UNKNOWN_TOOL: ToolUse = { name: 'tool', input: undefined, said: '', bases: [] }
 
@@ -64,8 +64,10 @@ const pathsIn = (text: string): string[] =>
     return quoted === undefined ? [unescaped(match[3] ?? '')] : [quoted, ...pathsIn(quoted)]
   })
 
-const changedDirs = (input: unknown) =>
-  strings(input).flatMap(text => [...text.matchAll(CHANGE_DIR)].map(match => match[1] ?? match[2] ?? unescaped(match[3] ?? '')))
+const changedDirs = (command: unknown) =>
+  typeof command === 'string' ? [...command.matchAll(CHANGE_DIR)].map(match => match[1] ?? match[2] ?? unescaped(match[3] ?? '')) : []
+
+const isRooted = (path: string) => path.startsWith('/') || path.startsWith('~')
 
 const proseOf = (blocks: readonly Block[]) =>
   blocks
@@ -140,7 +142,11 @@ export function collect(messages: readonly Message[]): Found[] {
     if (message.role === 'assistant') {
       for (const block of message.content) {
         if (block.type !== 'tool_use' || typeof block.id !== 'string' || typeof block.name !== 'string') continue
-        if (block.name === 'Bash') dirs.unshift(...changedDirs(block.input).reverse())
+        for (const dir of block.name === 'Bash' && isRecord(block.input) ? changedDirs(block.input.command) : []) {
+          const before = dirs[0]
+          if (isRooted(dir) || before === undefined) dirs.unshift(dir)
+          else dirs.unshift(`${before}/${dir}`, dir)
+        }
         dirs.length = Math.min(dirs.length, MAX_BASES)
         uses.set(block.id, { name: block.name, input: block.input, said: text, bases: [...dirs] })
       }
@@ -156,14 +162,16 @@ export function collect(messages: readonly Message[]): Found[] {
       if (block.type !== 'tool_result') continue
 
       const use = uses.get(String(block.tool_use_id)) ?? UNKNOWN_TOOL
-      const fragment = use.said || squeeze(`${use.name} ${strings(use.input).join(' ')}`)
-      const filePath = isRecord(use.input) && typeof use.input.file_path === 'string' ? use.input.file_path : undefined
-      const label = filePath ? `${toolLabel(use.name)} ${basename(filePath)}` : toolLabel(use.name)
       const images = imagesIn(innerBlocks(block))
-      for (const one of images) add({ kind: 'block', id: imageId(one.data), label, fragment, ...one })
-      if (images.length > 0) continue
+      const paths = images.length > 0 ? [] : namedFiles(use.name, use.input, resultText(block))
+      if (images.length === 0 && paths.length === 0) continue
 
-      for (const path of namedFiles(use.name, use.input, resultText(block))) {
+      const fragment = use.said || squeeze(`${use.name} ${strings(use.input).join(' ')}`)
+      const readFrom = isRecord(use.input) && typeof use.input.file_path === 'string' ? use.input.file_path : undefined
+      const label = readFrom ? `${toolLabel(use.name)} ${basename(readFrom)}` : toolLabel(use.name)
+      for (const one of images) add({ kind: 'block', id: imageId(one.data), label, fragment, ...one, ...(readFrom ? { readFrom } : {}) })
+
+      for (const path of paths) {
         add({
           kind: 'path',
           id: candidateId(path, use.bases),

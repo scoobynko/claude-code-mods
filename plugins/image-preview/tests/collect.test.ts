@@ -156,7 +156,7 @@ test('remembers the folders commands moved into', () => {
     ...call('Bash', { command: 'cd ../out; ./render.sh --out=fig.png' }, 't2'),
   ])
 
-  expect(found).toMatchObject([{ kind: 'path', path: 'fig.png', bases: ['../out', 'build dir'] }])
+  expect(found).toMatchObject([{ kind: 'path', path: 'fig.png', bases: ['build dir/../out', '../out', 'build dir'] }])
 })
 
 const rows = (name: string, input: object, result: unknown) => {
@@ -199,4 +199,18 @@ test('does not count what cannot add an image', () => {
   expect(arrivals('assistant', quiet.asked, pending).isNews).toBe(false)
   expect(arrivals('user', quiet.answered, pending).isNews).toBe(false)
   expect(arrivals('user', [{ type: 'text', text: 'see docs/a.png' }], pending).isNews).toBe(false)
+})
+
+test('reads a cd only out of the command, and stops at a bracket', () => {
+  const found = collect([
+    ...call('Bash', { command: '(cd build && make fig.png)', description: 'cd to the docs and build' }, 't1'),
+  ])
+
+  expect(found).toMatchObject([{ kind: 'path', path: 'fig.png', bases: ['build'] }])
+})
+
+test('says which file a read image came from', () => {
+  const found = collect(call('Read', { file_path: '/work/a.png' }, 't1', [image('image/png', SHOT)]))
+
+  expect(found).toMatchObject([{ kind: 'block', readFrom: '/work/a.png' }])
 })
