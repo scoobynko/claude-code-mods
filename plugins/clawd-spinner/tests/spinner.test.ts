@@ -294,6 +294,101 @@ test('switches the sound from the /clawd-sound command too', async ($, on) => {
   expect((await run()).text).toBe('Typing sound off.')
 })
 
+const pickCharacter = ($: Engine, args: string) =>
+  $.command.run({ command: 'clawd-spinner', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } })
+
+const answerQuestion = (on: On, label: string) => {
+  const asked: string[] = []
+  on('tool.call', (_, e) => {
+    const questions = (e as { questions?: { question: string; options: { label: string }[] }[] }).questions ?? []
+    asked.push(...questions.flatMap(one => one.options.map(option => option.label)))
+    return { result: { questions, answers: Object.fromEntries(questions.map(one => [one.question, label])) } }
+  })
+  return asked
+}
+
+const halfBlocks = (cells: string) => [...rowsOfAll(cells)].filter(char => char === '▀' || char === '▄').length
+
+const rowsOfAll = (cells: string) => {
+  const words = new Uint32Array(Uint8Array.from(atob(cells), char => char.charCodeAt(0)).buffer)
+  let text = ''
+  for (let i = 0; i < words.length; i += 3) text += String.fromCodePoint(words[i] ?? 0x20)
+  return text
+}
+
+test('swaps Clawd for the robot with /clawd-spinner robot, and remembers it', async ($, on) => {
+  const { clock, store, ui } = await startTyping($, on)
+  const clawdColumns = await columnsOf(ui)
+
+  expect((await pickCharacter($, 'robot')).text).toBe('Robot sits under the spinner now.')
+  expect(store.get('character')).toBe('robot')
+
+  await ui.redraw(PROPS)
+  await clock.advance(200)
+  expect(await columnsOf(ui)).toBeGreaterThan(clawdColumns)
+
+  expect((await pickCharacter($, 'Clawd')).text).toBe('Clawd sits under the spinner now.')
+  await ui.redraw(PROPS)
+  expect(await columnsOf(ui)).toBe(clawdColumns)
+})
+
+test('asks who should sit under the spinner when no name is given', async ($, on) => {
+  const options = answerQuestion(on, 'Robot')
+  const { store } = await startTyping($, on)
+
+  expect((await pickCharacter($, '')).text).toBe('Robot sits under the spinner now.')
+  expect(options).toEqual(['Clawd', 'Robot'])
+  expect(store.get('character')).toBe('robot')
+})
+
+test('keeps the character for a name it does not know', async ($, on) => {
+  const { store } = await startTyping($, on)
+
+  expect((await pickCharacter($, 'dragon')).text).toBe('No character called dragon. Pick clawd or robot.')
+  expect(store.has('character')).toBe(false)
+})
+
+test('draws the robot in half blocks when he was picked before', async ($, on) => {
+  answerSpinner(on)
+  answerTurns(on)
+  answerStore(on, { character: 'robot' })
+  const clock = mock.clock(on)
+  const blits = captureBlits(on)
+
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const columns = await columnsOf(ui)
+  await clock.advance(600)
+
+  expect(columns).toBe(20 + 38)
+  expect(blits.length).toBeGreaterThan(0)
+  expect(blits.every(cells => halfBlocks(cells) > 40)).toBe(true)
+  expect(new Set(blits).size).toBeGreaterThan(2)
+})
+
+test('the robot floats the code out of his laptop too', async ($, on) => {
+  answerSpinner(on)
+  answerTurns(on)
+  answerUsage(on, 0)
+  answerStore(on, { character: 'robot' })
+  const clock = mock.clock(on)
+  const blits = captureBlits(on)
+  on('turn.step', async function* (_, e) {
+    yield { kind: 'tool', index: 1, id: 'toolu_write', name: 'Write' }
+    yield { kind: 'input', index: 1, json: '{"file_path":"/tmp/a.ts","content":"const a = 1\\nexport default a\\n"}' }
+    yield stopWith({ input: 0, cacheRead: 0 })
+    return stepResult(e.turnId, e.index)
+  })
+
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  const ui = await $.ui.mount({ ...MOUNT, surface: 'terminal' })
+  const columns = await columnsOf(ui)
+  await runStep($, clock, 4000)
+
+  const shown = blits.flatMap(cells => rowsOf(cells, columns)).join('\n')
+  for (const line of ['const a = 1', 'export default a']) expect(shown).toContain(line)
+})
+
 test('falls silent while he thinks and when the turn ends', async ($, on) => {
   const { clock, plays, ui } = await startTyping($, on, { sound: true })
   await ui.redraw({ ...PROPS, mode: 'thinking' })
