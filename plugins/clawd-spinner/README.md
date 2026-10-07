@@ -8,6 +8,8 @@ Clawd sits under the Claude Code spinner with a tiny laptop and works along with
 
 - **Typing sound**: off until you switch it on. Click the `[♪]` under Clawd (dim when off, lit when on), or run `/clawd-sound`; a quiet keyboard then plays while he types and stops while he thinks. The choice is remembered across sessions.
 
+- **Robot**: run `/clawd-spinner` and pick Robot, or `/clawd-spinner robot`, to swap Clawd for a little robot sitting on the ground. He types on a laptop in his lap, his eyes reading along, and smiles when Claude finishes a piece of code; while thinking he looks around and his antenna blinks. The code and the tokens float the same way. `/clawd-spinner clawd` brings Clawd back. The choice is remembered across sessions.
+
 Terminal only; other surfaces keep the normal spinner. The sound plays in macOS terminals; the click needs the fullscreen terminal (`"tui": "fullscreen"`), the command works everywhere.
 
 ## Install
@@ -31,6 +33,8 @@ The poses are text art at the top of `hooks/register.tsx`, two characters per te
 | `.` | empty |
 
 A terminal cell can show two colours, so every 2×2 block of marks may hold at most two different ones. Save the file and a running session reloads the mod.
+
+The robot is drawn in half blocks instead, one mark per column and two per terminal row, so every mark can have its own colour. His body is `ROBOT` in the same file, the laptop is `ROBOT_LAPTOP`, and `ROBOT_COLORS` maps each mark to a colour; the eyes, mouth and hands are drawn on top of him while he moves.
 
 ## Sound
 
